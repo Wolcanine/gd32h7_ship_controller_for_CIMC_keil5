@@ -1,0 +1,24 @@
+# 构建产物
+project/Objects/
+project/Listings/
+*.axf
+*.hex
+*.o
+*.d
+*.crf
+*.htm
+*.dep
+*.map
+*.iex
+*.bak
+
+# Keil 个人设置
+*.uvguix.*
+*.uvoptx
+
+# JLink 设置
+JLinkSettings.ini
+
+# 系统文件
+.DS_Store
+Thumbs.db
