@@ -184,3 +184,32 @@ IDE:  Keil MDK5 (uVision5)
   [ ] 全系统联调
 
 ======================================================================
+九、GitHub 仓库上传
+======================================================================
+
+  仓库地址：
+    https://github.com/Wolcanine/gd32h7_ship_controller_for_CIMC_keil5
+
+  SSH 远程：
+    git@github.com:Wolcanine/gd32h7_ship_controller_for_CIMC_keil5.git
+
+  操作记录：
+    1. 本地修改文件 git add -A（含修改 + 未跟踪文件）
+    2. git commit: "更新外设驱动代码，添加启动文件和工作记录"（commit 092913e）
+    3. HTTPS 443 端口被墙 → git push 失败
+    4. 生成 SSH Key（ed25519）→ 添加到 GitHub Settings → SSH Keys
+    5. git remote set-url origin git@github.com:... → 切换为 SSH 方式
+    6. git push origin master ✅ 推送成功
+
+  推送内容（24 文件，4163 行新增）：
+    - 修改文件：MyI2C, laser, ps2, pwm_output, uart_driver, MPU6050, main.c, systick
+    - 新增文件：Startup/startup_gd32h7xx.s（启动文件）
+    - 新增文件：工作记录 ×4, 1.txt, AF映射表.txt, 导出引脚.txt
+    - 新增文件：project/.vscode/c_cpp_properties.json, project/.claude/settings.local.json
+    - 新增文件：project/build.log
+
+  问题记录：
+    - Windows 环境下 GitHub HTTPS 443 端口超时，SSH 22 端口正常
+    - 解决方案：使用 SSH Key 认证 + SSH 远程地址
+
+======================================================================
