@@ -1,0 +1,200 @@
+工作记录 — 2026-06-03
+项目: 水面垃圾收集船主控程序
+MCU:  GD32H759IMK6
+IDE:  Keil MDK5 (uVision5)
+
+======================================================================
+一、本轮工作总览
+======================================================================
+
+解决与另一个项目（摄像头 OV2640 + LCD ATK-MD0350 + EXMC/SDRAM）
+合并时的引脚冲突。对方引脚不可更改，本项目迁移 10 个冲突引脚。
+
+涉及模块: 电机 PWM、I2C (MPU6050+PCA9685)、3 路串口、printf 重定向
+
+======================================================================
+二、冲突分析
+======================================================================
+
+【另一个项目的引脚 (不可修改)】
+
+  拍照按键:    PC13
+  红外接收:    PH15
+  UART3:       PA0(TX) / PA1(RX)  @921600
+  OLED:        PD12(SCL) / PD13(SDA) @0x3C
+  摄像头 OV2640:
+    SCCB:      PB4(SCL) / PB7(SDA)
+    HREF:      PA4
+    VSYNC:     PG9
+    PCLK:      PE3
+    XCLK:      PG7
+    D0-D7:     PC6 / PA10 / PC8 / PC9 / PE4 / PB6 / PB8 / PE6
+    控制脚:    PB0
+  LCD ATK-MD0350 (8080 并口):
+    D0-D15:    PC1 / PD11 / PA9 / PH10 / PC4 / PB1 / PG10 / PA6 /
+               PB11 / PH4 / PD3 / PC7 / PG12 / PA8 / PA15 / PA3
+    WR:        PD5
+    CS:        PD7
+    RS/DC:     PB3
+    BL:        PB9
+    RST:       PB5
+    RD:        接 3V3
+  EXMC/SDRAM:
+    PB2, PC0, PD0/PD1/PD8/PD9/PD10/PD14/PD15,
+    PE0/PE1/PE7-E12/PE14,
+    PF0-PF5/PF11-PF15,
+    PG0-PG2/PG4/PG5/PG8/PG15,
+    PH2/PH3/PH5
+
+【本项目原引脚 vs 冲突对象】
+
+  本项目功能              本项目引脚   ←→  另一个项目功能
+  ───────────────────────────────────────────────────────
+  左电机 ENA1 (PWM)        PA6              LCD D7           ✗
+  左电机 IN1  (GPIO)       PC6              摄像头 D0        ✗
+  左电机 IN2  (GPIO)       PC0              EXMC/SDRAM       ✗
+  右电机 IN3  (GPIO)       PC7              LCD D11          ✗
+  右电机 IN4  (GPIO)       PC1              LCD D0           ✗
+  I2C SDA                  PB11             LCD D8           ✗
+  USART0 TX (debug)        PA9              LCD D2           ✗
+  USART0 RX (debug)        PA10             摄像头 D1        ✗
+  USART1 RX (TOF激光)      PA3              LCD D15          ✗
+  USART2 TX (摄像头通信)   PD5              LCD WR           ✗
+
+  ── 以下无冲突，保持 ──
+  右电机 ENA2 (PA7) / I2C SCL (PB10) / PS2 (PB12-PB15)
+  OLED (PD12/PD13 — 两项目共享) / USART1 TX (PA2) / USART2 RX (PD6)
+  LED1 (PE2) / LED2 (PE5) / LED3 (PH7) / EVAL LED1 (PF10)
+
+======================================================================
+三、解决方案
+======================================================================
+
+【A. 电机引脚 — 软件 GPIO，任意空闲引脚均可】
+
+  信号          旧引脚  →  新引脚    说明
+  ──────────────────────────────────────────────
+  左电机 ENA1   PA6     →  PC2      (PA6 被 LCD D7 占用)
+  左电机 IN1    PC6     →  PC3      (PC6 被摄像头 D0 占用)
+  左电机 IN2    PC0     →  PD4      (PC0 被 SDRAM 占用)
+  右电机 ENA2   PA7     →  PC12     (与 ENA1 同为 GPIOC，PWM 驱动单端口限制)
+  右电机 IN3    PC7     →  PG3      (PC7 被 LCD D11 占用)
+  右电机 IN4    PC1     →  PG6      (PC1 被 LCD D0 占用)
+
+  注意: gd32_driver_pwm.c 的 PWM ISR 仅支持单一 GPIO 端口，
+        因此两个 ENA 引脚必须在同一端口 (GPIOC: PC2 + PC12)。
+
+【B. I2C 引脚 — 软件 I2C，任意空闲引脚对】
+
+  信号    旧引脚  →  新引脚    说明
+  ─────────────────────────────────────
+  SCL     PB10    →  PH11      (与 SDA 同端口 GPIOH)
+  SDA     PB11    →  PH12      (PB11 被 LCD D8 占用)
+
+【C. 串口 — 硬件 UART，需 AF 映射正确】
+
+  功能        旧外设   旧引脚        →  新外设  新引脚         AF
+  ────────────────────────────────────────────────────────────────
+  调试 printf  USART0   PA9 / PA10    →  UART7   PF6 / PF7     AF8
+  TOF 激光     USART1   PA3 (RX)      →  USART1  PC5 (RX)      AF7  (PA2 TX 保持)
+  摄像头通信   USART2   PD5 / PD6     →  UART4   PC10 / PC11   AF8
+
+  AF 映射来源: GD32H7xx 标准外设库 gd32h7xx_gpio.c:
+    AF7 = USART0/1/2/5/UART6
+    AF8 = UART3/4/7
+  ⚠ 逐引脚 AF 映射需对照 GD32H759IMK6 数据手册验证 (基于 STM32H743I 推测)
+
+【D. printf 重定向】
+
+  原: MicroLIB 半主机 (通过 Keil 调试器输出)
+  新: fputc() → UART7 硬件 TX (PF6, 115200 8N1)
+  实现: main.c 中添加 fputc()，调用 usart_data_transmit(UART7, ...)
+  移除: gd_eval_com_init(EVAL_COM) — USART0 PA9/PA10 已释放
+
+======================================================================
+四、修改文件清单
+======================================================================
+
+| # | 文件                                   | 变更说明                         |
+|---|----------------------------------------|----------------------------------|
+| 1 | App/inc/pwm_output.h                   | 6 个电机引脚宏 → 新引脚          |
+| 2 | App/src/pwm_output.c                   | gpio_clk_enable() 增加 F/G/H 口  |
+| 3 | App/inc/MyI2C.h                        | I2C 引脚/端口 → PH11/PH12        |
+| 4 | App/inc/uart_driver.h                  | 模块枚举注释 + 硬件连接说明更新  |
+| 5 | App/src/uart_driver.c                  | 硬件配置表 + UART4/UART7 ISR     |
+| 6 | User/main.c                            | 添加 fputc() + uart_init(UART_DBG) |
+| 7 | Library/Utilites/gd32h759i_eval.h      | (不变) main.c 不再调用 EVAL_COM  |
+
+未修改文件:
+  App/inc/ps2.h / App/src/ps2.c            — 引脚无冲突
+  App/inc/oled.h / App/src/oled.c          — PD12/PD13 共享兼容
+  App/src/MyI2C.c                          — 使用宏，自动跟随 MyI2C.h
+  App/src/laser.c                          — 使用 UART_TOF 枚举，不变
+  App/src/gd32_driver_pwm.c                — 接口不变
+  HardWare/LED/                            — 全部无冲突
+  User/gd32h7xx_it.c                       — ISR 在 uart_driver.c 中实现
+
+======================================================================
+五、最终引脚分配表
+======================================================================
+
+已占用引脚 (18 个):
+
+  左电机 ENA1   PC2     pwm_output (GPIO)  ← 原 PA6
+  左电机 IN1    PC3     pwm_output (GPIO)  ← 原 PC6
+  左电机 IN2    PD4     pwm_output (GPIO)  ← 原 PC0
+  右电机 ENA2   PC12    pwm_output (GPIO)  ← 原 PA7
+  右电机 IN3    PG3     pwm_output (GPIO)  ← 原 PC7
+  右电机 IN4    PG6     pwm_output (GPIO)  ← 原 PC1
+  PS2 CS        PB12    ps2 (软件 SPI)
+  PS2 CLK       PB13    ps2 (软件 SPI)
+  PS2 DI        PB14    ps2 (软件 SPI)
+  PS2 DO        PB15    ps2 (软件 SPI)
+  I2C SCL       PH11    MyI2C → MPU6050(0x68) + PCA9685(0x40)  ← 原 PB10
+  I2C SDA       PH12    MyI2C                                    ← 原 PB11
+  UART7 TX      PF6     调试 printf (AF8)    ← 原 USART0 PA9
+  UART7 RX      PF7     调试串口 (AF8)       ← 原 USART0 PA10
+  USART1 TX     PA2     TOF200F 激光 (AF7)   保持
+  USART1 RX     PC5     TOF200F 激光 (AF7)   ← 原 PA3
+  UART4 TX      PC10    摄像头识别板 (AF8)   ← 原 USART2 PD5
+  UART4 RX      PC11    摄像头识别板 (AF8)   ← 原 USART2 PD6
+  OLED SCL      PD12    OLED (软件 I2C)      保持，与另一个项目共享
+  OLED SDA      PD13    OLED (软件 I2C)      保持，与另一个项目共享
+
+内部定时器:
+  TIMER3   50Hz 控制周期
+  TIMER4   软件 PWM 时基
+
+已释放给另一个项目的引脚 (10 个):
+  PA6, PA9, PA10, PA3, PB11, PC0, PC1, PC6, PC7, PD5
+
+======================================================================
+六、待验证 & 待测试
+======================================================================
+
+【需对照 GD32H759IMK6 数据手册验证的 AF 映射】
+
+  ⚠ PC5  AF7  = USART1_RX  ?
+  ⚠ PF6  AF8  = UART7_TX   ?
+  ⚠ PF7  AF8  = UART7_RX   ?
+  ⚠ PC10 AF8  = UART4_TX   ?
+  ⚠ PC11 AF8  = UART4_RX   ?
+
+  备选方案 (如果上述 AF 映射不对):
+    调试 UART:  改用 USART5 (PC12/PD2, AF7)
+    TOF 激光:   改用 USART1 其他 RX 引脚
+    摄像头通信: 改用 UART7 或 USART5
+
+【测试清单】
+
+  [ ] UART7 (PF6/PF7) — 串口助手 115200 观察 printf 输出
+  [ ] USART1 (PA2/PC5) — TOF200F 激光测距 Modbus 通信
+  [ ] UART4 (PC10/PC11) — 摄像头识别板串口通信
+  [ ] 6 路电机 PWM/GPIO (PC2/PC3/PD4/PC12/PG3/PG6) — 电机转动 & 调速
+  [ ] I2C (PH11/PH12) — MPU6050 陀螺仪数据 & PCA9685 舵机控制
+  [ ] PS2 手柄 (PB12-PB15) — 遥控功能正常
+  [ ] OLED (PD12/PD13) — 显示正常
+  [ ] LED (PE2/PE5/PH7/PF10) — 板载指示灯
+  [ ] 编译: 0 Error(s), 0 Warning(s)
+
+======================================================================

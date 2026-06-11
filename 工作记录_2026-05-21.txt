@@ -1,0 +1,331 @@
+工作记录 — 2026-05-21
+项目: 水面垃圾收集船主控程序
+MCU:  GD32H759IMK6
+IDE:  Keil MDK5 (uVision5)
+
+======================================================================
+一、本轮工作总览
+======================================================================
+
+将原有 GD32F407VET6 (Eclipse + ARM GCC) 工程完整移植至
+GD32H759IMK6 (Keil MDK5 uVision5)，并做以下工作：
+  - 应用层代码目录重构
+  - 所有源文件规范化注释
+  - 时钟树错误排查与修复（发现 3 处 P0 级 bug）
+  - CPU 频率相关延时参数重算
+  - 新增 OLED 显示屏驱动 (SSD1306)
+  - 加入传感器数据串口输出（方便调试）
+  - 全面审查引脚分配，整合模块工程
+  - 创建 Git 仓库并推送至 GitHub
+
+原始项目记录参见：
+  C:\Users\23792\Downloads\GD32EB_v1.5.8_Rel\GD32EB\workspace\f407control_bkup\
+  工作记录_2026-05-07.txt ~ 2026-05-19.txt
+
+======================================================================
+二、移植背景
+======================================================================
+
+原平台:  GD32F407VET6 (Cortex-M4) @ 168MHz
+          Eclipse IDE + ARM GCC + newlib-nano
+          GD32F4xx_standard_peripheral 外设库
+
+目标平台: GD32H759IMK6 (Cortex-M7) @ 600MHz
+          Keil MDK5 (uVision5) + ARMCC v5.06
+          GD32H7xx_standard_peripheral 外设库
+
+======================================================================
+三、文件结构重构
+======================================================================
+
+原有工程将应用层源文件散放在 src/ 和 inc/ 目录，与 Eclipse IDE
+配置文件混在一起。迁移后结构：
+
+00-Project_Template/
+├── App/                      ← 新增：应用层代码独立目录
+│   ├── inc/                  ← 16 个头文件 (ps2.h ~ oled.h)
+│   └── src/                  ← 14 个源文件 (ps2.c ~ oled.c)
+├── User/                     ← Keil 模板用户代码
+│   ├── main.c                ← 水面垃圾船主程序
+│   ├── gd32h7xx_it.c         ← 中断服务函数 (TIMER3/4, SysTick)
+│   ├── gd32h7xx_it.h
+│   ├── systick.c/h
+│   └── gd32h7xx_libopt.h
+├── CMSIS/GD/GD32H7xx/        ← H7 设备头文件 + system_gd32h7xx.c
+│   └── Source/ARM/startup_gd32h7xx.s  ← ARMCC 启动文件
+├── Library/
+│   ├── GD32H7xx_standard_peripheral/ ← H7 外设库
+│   └── Utilites/gd32h759i_eval.c/h   ← H7 BSP 层
+├── project/
+│   └── CIMC_GD32_Template.uvprojx    ← Keil 项目文件
+├── HardWare/LED/             ← 板载 LED 驱动 (CIMC 板)
+├── HeaderFiles/              ← 主头文件聚合
+└── Function/                 ← 模板函数入口
+
+======================================================================
+四、编译错误修复记录
+======================================================================
+
+首次编译共 4 errors, 2 warnings，逐一修复：
+
+Error 1: TIMER5_DAC_IRQn undefined
+  文件: gd32_driver_pit.c:31
+  原因: H7 的中断名为 TIMER5_DAC_UDR_IRQn
+        (F4 是 TIMER5_DAC_IRQn)
+  修复: 改用 TIMER5_DAC_UDR_IRQn
+
+Error 2: M_PI undefined
+  文件: arm_ik.c:30
+  原因: ARMCC MicroLIB 的 <math.h> 不提供 M_PI 宏
+  修复: arm_ik.c 添加 #define M_PI 3.14159265...
+
+Error 3+4: main.h cannot open source input file
+  文件: main.c:13, gd32h7xx_it.c:36
+  原因: 迁移时误删了 main.h（timer20ms_flag 声明）
+  修复: 恢复 App/inc/main.h
+
+Warning 1: invalid multibyte character sequence
+  文件: MPU6050.c:253
+  原因: 中文箭头符号 →（UTF-8 多字节）导致编译警告
+  修复: 替换为 ASCII 文本
+
+Warning 2: pointless comparison of unsigned integer with zero
+  文件: servo_arm.c:227
+  原因: arm_target[i] 是 uint16_t，< 0 永远为 false
+  修复: 删除冗余判断
+
+Warning 3: enumerated type mixed with another type
+  文件: gd32_driver_pit.c (2处)
+  原因: pit_irq[] 声明为 uint8_t，但 nvic_irq_enable 需 IRQn_Type
+  修复: 数组类型改为 IRQn_Type
+
+======================================================================
+五、时钟树适配 — 关键问题详解
+======================================================================
+
+【背景】GD32H759IMK6 默认时钟配置 (system_gd32h7xx.c):
+  HXTAL = 25MHz, PLL0P = 25/5×120 = 600MHz (SYSCLK)
+  AHB  = SYSCLK / 2 = 300MHz
+  APB1 = AHB / 2 = 150MHz (prescaler ≠ 1)
+  APB2 = AHB / 1 = 300MHz (prescaler = 1)
+
+定时器时钟计算规则:
+  APB prescaler = 1 → CK_TIMER = CK_APB
+  APB prescaler > 1 → CK_TIMER = CK_APB × 2
+
+所以:
+  TIMER1(APB2): CK_TIMER = 300MHz × 1 = 300MHz
+  TIMER2~6(APB1): CK_TIMER = 150MHz × 2 = 300MHz
+
+但 SystemCoreClock 变量 = 600MHz (SYSCLK, 非 HCLK)
+—— 这是 GD32 HAL 的惯例，但在 F4 上 SYSCLK=HCLK 所以没区别
+
+【Bug 1 — SysTick 频率减半 (P0)】
+  问题: systick_config() 调用 SysTick_Config(SystemCoreClock/1000)
+        SystemCoreClock=600MHz → reload=600000
+        SysTick 实际使用 HCLK=300MHz → 300MHz/600000 = 500Hz
+        预期 1000Hz，实际 500Hz
+  影响: delay_1ms() 慢 2 倍
+        g_sys_ms 慢 2 倍 → 所有超时检测翻倍
+  修复: 改用 rcu_clock_freq_get(CK_AHB) / 1000
+
+【Bug 2 — PWM 频率减半 (P0)】
+  问题: gd32_driver_pwm.c 中 prescaler = SystemCoreClock/1MHz-1 = 599
+        TIMER4 实际时钟 300MHz → 300MHz/600 = 500kHz
+        预期 ISR 1MHz → 200kHz, 实际 500kHz → 100kHz
+        最终 PWM 频率从预期 200Hz 变成 100Hz
+  修复: 新增 pwm_timer_clock() = rcu_clock_freq_get(CK_APB1)×2
+        prescaler = 300MHz/1MHz - 1 = 299
+
+【Bug 3 — PIT 控制周期减半 (P0)】
+  问题: pit_ms_init(PIT_TIMER3, 20) 计算 period = 20×(600MHz/1000) = 12,000,000
+        TIMER3 在 APB1, CK_TIMER=300MHz
+        freq_div = 12M >> 15 = 366
+        period_temp = 12M / 367 = 32697
+        实际中断 = 300MHz/367/32697 ≈ 40ms → 25Hz
+        预期 50Hz (20ms)
+  修复: pit_init() 内部新增 pit_get_timer_clock()
+        自动将 period 从 SystemCoreClock 周期数缩放到实际定时器时钟
+
+======================================================================
+六、CPU 频率相关延时调整
+======================================================================
+
+F407@168MHz → H759@600MHz，比例因子: 600/168 ≈ 3.571
+
+| 模块 | 位置 | 原值 | 新值 | 说明 |
+|------|------|:---:|:---:|------|
+| ps2.c | PS2_DelayUs 内循环 | 60 | 214 | 1µs 粒度延时 |
+| MyI2C.c | I2C 时序空循环 | 800 | 2857 | I2C 总线速率控制 |
+| pca9685.c | 振荡器等待(≈500µs) | 500 | 1786 | PCA9685 prescale 写入后等待 |
+
+其他基于硬件定时器的延时自动适应:
+  delay_1ms()         → 使用 SysTick (已修复 HCLK 问题)
+  pit_ms_init()       → 使用 TIMER 硬件 (已修复时钟缩放)
+  pit_us_init()       → 同上
+
+======================================================================
+七、OLED 显示整合
+======================================================================
+
+来源: 04 例程模板\19_OLED_driver (CIMC 模块工程)
+驱动: SSD1306, 128×32 分辨率, I2C 地址 0x78 (7bit: 0x3C)
+接口: 软件 I2C (GPIO 位操作模拟)
+引脚: PD12(SCL), PD13(SDA) — 独立总线，与 MPU6050/PCA9685 不冲突
+
+整合内容:
+  App/inc/oled.h        — OLED 驱动头文件
+  App/inc/oledfont.h    — 12/16/24 点阵 ASCII + 中文字库 (55KB)
+  App/src/oled.c        — SSD1306 驱动 + 图形 API
+
+功能函数:
+  OLED_Init()           — 初始化显示屏
+  OLED_Clear()          — 清屏
+  OLED_ShowString()     — 显示字符串 (x, y, str, size)
+  OLED_ShowNum()        — 显示数字
+  OLED_ShowChinese()    — 显示中文 (需字库支持)
+  OLED_Refresh()        — 刷新显存到屏幕
+  OLED_DrawPoint/Line/Circle — 绘图 API
+
+当前显示内容 (main.c):
+  第1行: "Boat Control"
+  第2行: "System Ready"
+
+======================================================================
+八、传感器数据串口输出
+======================================================================
+
+50Hz 主循环中每 5 帧 (~10Hz) 输出一次全部传感器数据:
+
+输出格式:
+  PS2:0.00/0.00 GYRO:+000/+000/+000 ACCEL:+00000/+00000/+01000 LASER: 200 MODE:0x41
+
+字段说明:
+  PS2:     油门值/转向值 (归一化 -1.0~1.0)
+  GYRO:    陀螺仪 X/Y/Z (0.01°/s 单位，静止≈0)
+  ACCEL:   加速度计 X/Y/Z (mg 单位，静止 Z≈1000)
+  LASER:   TOF200F 激光测距 (cm，无效≈65535)
+  MODE:    PS2 模式 (0x41=数字, 0x73=模拟)
+
+======================================================================
+九、引脚分配最终表
+======================================================================
+
+已占用引脚 (18个):
+
+  左电机 ENA1   PA6     pwm_output (GPIO)
+  左电机 IN1    PC6     pwm_output (GPIO)
+  左电机 IN2    PC0     pwm_output (GPIO)
+  右电机 ENA2   PA7     pwm_output (GPIO)
+  右电机 IN3    PC7     pwm_output (GPIO)
+  右电机 IN4    PC1     pwm_output (GPIO)
+  PS2 CS        PB12    ps2 (软件 SPI)
+  PS2 CLK       PB13    ps2 (软件 SPI)
+  PS2 DI        PB14    ps2 (软件 SPI)
+  PS2 DO        PB15    ps2 (软件 SPI)
+  I2C SCL       PB10    MyI2C → MPU6050(0x68) + PCA9685(0x40)
+  I2C SDA       PB11    MyI2C
+  USART0 TX     PA9     调试 printf
+  USART0 RX     PA10    调试串口
+  USART1 TX     PA2     TOF200F 激光 (AF7)
+  USART1 RX     PA3     TOF200F 激光 (AF7)
+  USART2 TX     PD5     摄像头识别板 (AF7)
+  USART2 RX     PD6     摄像头识别板 (AF7)
+  OLED SCL      PD12    OLED (软件 I2C)
+  OLED SDA      PD13    OLED (软件 I2C)
+
+EVAL 板资源:
+  LED1    PF10    可用 (main.c 中已初始化)
+  LED2    PA6     被电机 ENA1 占用 (非问题)
+  WAKEUP  PA0     空闲
+  TAMPER  PC13    空闲
+  USER    PF8     空闲
+
+内部定时器:
+  TIMER3   50Hz 控制周期
+  TIMER4   软件 PWM 时基
+
+空闲可扩展引脚 (来自模块工程):
+  PF6, PF7    → CAN2 (AF_2)
+  PE2, PE5    → 板载 LED1/2
+  PH7         → 板载 LED3
+  PA0, PA1    → ADC0_IN0/IN1
+  PD4         → 485_CS (RS485 不用可占用)
+
+======================================================================
+十、工程规范化
+======================================================================
+
+1. 所有源文件添加统一文件头:
+   /*******************************************************************************
+    * 文件名          filename
+    * 描述            模块功能描述
+    * MCU             GD32H759IMK6
+    * IDE             Keil MDK5 (uVision5)
+    *
+    * 修改记录
+    * 日期            作者            备注
+    * 2026-05-21      CIMC            GD32F407→GD32H759 移植
+    ******************************************************************************/
+
+2. 关键函数添加函数头:
+   /*******************************************************************************
+    * 函数名    function_name
+    * 描述      函数功能描述
+    * 参数      param    参数说明
+    * 返回值    返回值说明
+    ******************************************************************************/
+
+3. 代码风格统一:
+   - 大括号同行 (函数、if、while、for)
+   - 4 空格缩进 (非 Tab)
+   - snake_case 命名
+   - 中文注释
+
+4. Keil 项目 (.uvprojx):
+   - App 分组新增 13 个 .c + 18 个 .h 文件
+   - User 分组新增 systick.h, gd32h7xx_it.h, gd32h7xx_libopt.h
+   - 编译包含路径新增 ..\App\inc
+   - 预定义宏 GD32H7XX
+
+======================================================================
+十一、Git 仓库
+======================================================================
+
+  commit de66d52
+  Author: Wolcanine
+  描述:  水面垃圾收集船主控 — GD32H759IMK6 + Keil MDK5 移植
+
+  仓库: https://github.com/Wolcanine/gd32h7_ship_controller_for_CIMC_keil5
+  分支: master
+  文件: 161 files changed, 78579 insertions(+)
+
+  .gitignore 已配置忽略:
+    project/Objects/、project/Listings/
+    *.axf *.hex *.o *.d *.crf *.htm *.dep *.map
+    *.uvguix.* *.uvoptx
+    JLinkSettings.ini
+
+======================================================================
+十二、编译结果
+======================================================================
+
+  最终编译: 0 Error(s), 0 Warning(s)
+  Code=20920  RO-data=9684  RW-data=152  ZI-data=5536
+  ROM合计: ~30.6 KB
+  RAM合计: ~5.6 KB
+
+  芯片容量: Flash 3840 KB / RAM 832 KB
+  占用比例: ROM 0.8% / RAM 0.7% (大量余量)
+
+======================================================================
+十三、待完成事项
+======================================================================
+
+  [ ] 传感器功能实测（上电观察串口输出，验证各模块数据）
+  [ ] 机械臂舵机脉宽重新标定（因平台更换，需重新校准对正位）
+  [ ] 水面航行测试 — PID 参数、避障逻辑
+  [ ] OLED 可扩展显示实时数据（角度、距离、模式等）
+  [ ] 可按需添加 CAN/ADC/485 等模块驱动
+
+======================================================================

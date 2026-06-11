@@ -11,6 +11,7 @@
  ******************************************************************************/
 
 #include "ps2.h"
+#include <stdio.h>
 
 /* ==================== 软件模拟 SPI 宏定义 ==================== */
 /* 通过宏直接操作 GPIO，模拟 SPI 时序，提升代码执行效率 */
@@ -81,13 +82,15 @@ static uint8_t PS2_SendCmd(uint8_t cmd)
  */
 void ps2_init(void)
 {
-    /* 使能 GPIOB 时钟 */
+    /* 使能 GPIOA (DI/DO) 和 GPIOB (CS/CLK) 时钟 */
+    rcu_periph_clock_enable(RCU_GPIOA);
     rcu_periph_clock_enable(RCU_GPIOB);
 
-    /* DI: 浮空输入模式 */
+    /* DI: 浮空输入模式 (PA5, CN5 Pin 50) */
     gpio_mode_set(PS2_DI_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE, PS2_DI_PIN);
 
     /* DO、CS、CLK: 推挽输出，速度 50MHz */
+    /* DO: PA7 (CN5 Pin 49), CS: PB12 (CN6 Pin 75), CLK: PB13 (CN5 Pin 22) */
     gpio_mode_set(PS2_DO_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, PS2_DO_PIN);
     gpio_mode_set(PS2_CS_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, PS2_CS_PIN);
     gpio_mode_set(PS2_CLK_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, PS2_CLK_PIN);
@@ -261,4 +264,85 @@ uint8_t ps2_key_pressed(uint8_t key)
         case PSB_SQUARE:    return PS2_Data.square;
         default:            return 0;  /* 未知按键，返回未按下 */
     }
+}
+
+/*******************************************************************************
+ * 函数名    ps2_print_state
+ * 描述      通过串口 (printf → UART7) 输出完整的 PS2 手柄状态
+ *           用于遥控器模块独立测试，输出内容包括:
+ *             - 连接状态 & 工作模式
+ *             - 全部 16 个按键状态（按键名 + ●/○ 表示按下/松开）
+ *             - 左右摇杆原始值 (0~255)
+ *             - 归一化油门/转向值 (-1.0 ~ +1.0)
+ * 参数      none
+ * 返回值    none
+ * 备注      调用前需确保 uart_init(UART_DBG, 115200) 已完成
+ ******************************************************************************/
+void ps2_print_state(void)
+{
+    /* ---- 获取当前值（避免多次读取略有偏差） ---- */
+    uint8_t mode      = ps2_get_mode();
+    uint8_t connected = ps2_is_connected();
+    float   throttle  = ps2_get_throttle();
+    float   steering  = ps2_get_steering();
+
+    /* ---- 辅助宏：按键按下显示 #，松开显示 . ---- */
+#define PS2_BTN(v)  ((v) ? "#" : ".")
+
+    /* ==================== 第1行：连接 & 模式 ==================== */
+    printf("\r\n========================================\r\n");
+    printf("  PS2 Remote Controller Status\r\n");
+    printf("========================================\r\n");
+    printf("  Connection : %s\r\n", connected ? "ONLINE" : "OFFLINE");
+    printf("  Mode       : 0x%02X (%s)\r\n",
+           mode, (mode == PS2_MODE_ANALOG) ? "ANALOG"  :
+                 (mode == PS2_MODE_DIGITAL) ? "DIGITAL" : "UNKNOWN");
+
+    /* ==================== 第2行：方向键 (D-Pad) ==================== */
+    printf("  ----------------------------------------\r\n");
+    printf("  [D-Pad]\r\n");
+    printf("         UP   : %s\r\n", PS2_BTN(PS2_Data.up));
+    printf("    LEFT RIGHT: %s / %s\r\n",
+           PS2_BTN(PS2_Data.left), PS2_BTN(PS2_Data.right));
+    printf("        DOWN  : %s\r\n", PS2_BTN(PS2_Data.down));
+
+    /* ==================== 第3行：动作键 (右侧4键) ==================== */
+    printf("  ----------------------------------------\r\n");
+    printf("  [Action Buttons]\r\n");
+    printf("    ^ TRIANGLE : %s     O CIRCLE : %s\r\n",
+           PS2_BTN(PS2_Data.triangle), PS2_BTN(PS2_Data.circle));
+    printf("    X CROSS    : %s     # SQUARE : %s\r\n",
+           PS2_BTN(PS2_Data.cross), PS2_BTN(PS2_Data.square));
+
+    /* ==================== 第4行：肩键 & 功能键 ==================== */
+    printf("  ----------------------------------------\r\n");
+    printf("  [Shoulder & Function]\r\n");
+    printf("    L1: %s  L2: %s  L3: %s\r\n",
+           PS2_BTN(PS2_Data.l1), PS2_BTN(PS2_Data.l2), PS2_BTN(PS2_Data.l3));
+    printf("    R1: %s  R2: %s  R3: %s\r\n",
+           PS2_BTN(PS2_Data.r1), PS2_BTN(PS2_Data.r2), PS2_BTN(PS2_Data.r3));
+    printf("    SELECT: %s      START: %s\r\n",
+           PS2_BTN(PS2_Data.select), PS2_BTN(PS2_Data.start));
+
+    /* ==================== 第5行：摇杆原始值 ==================== */
+    printf("  ----------------------------------------\r\n");
+    printf("  [Joysticks - Raw ADC (0~255)]\r\n");
+    printf("    Left  X: %3u (128=center, >128=right)\r\n",
+           PS2_Data.joy_left_x);
+    printf("    Left  Y: %3u (128=center, <128=up)\r\n",
+           PS2_Data.joy_left_y);
+    printf("    Right X: %3u\r\n", PS2_Data.joy_right_x);
+    printf("    Right Y: %3u\r\n", PS2_Data.joy_right_y);
+
+    /* ==================== 第6行：归一化控制量 ==================== */
+    printf("  ----------------------------------------\r\n");
+    printf("  [Normalized Control (-1.0 ~ +1.0)]\r\n");
+    printf("    Throttle : %+6.3f  (0=stop, +1=full fwd, -1=full rev)\r\n",
+           (double)throttle);
+    printf("    Steering : %+6.3f  (0=center, +1=right, -1=left)\r\n",
+           (double)steering);
+
+    printf("========================================\r\n");
+
+#undef PS2_BTN
 }

@@ -1,40 +1,19 @@
 /*******************************************************************************
  * 文件名          uart_driver.c
  * 描述            多路 UART 驱动 — 中断接收 + 软件 FIFO
- *                 支持 UART_TOF(USART1)、UART_DBG(USART0)、UART_CAM(USART2)
+ *                 支持 UART_TOF(UART3)、UART_DBG(UART4)、UART_CAM(UART7)
  * MCU             GD32H759IMK6
  * IDE             Keil MDK5 (uVision5)
  *
  * 修改记录
  * 日期            作者            备注
- * 2026-05-06      AI助手          初始版本
- * 2026-05-08      AI助手          添加 UART_CAM (USART2)
+ * 2025-05-06      AI助手          初始版本：中断接收 + 软件FIFO
+ * 2025-05-06      AI助手          TOF 改为 USART1(PA2/PA3)
+ * 2026-05-08      AI助手          添加 UART_CAM (USART2, PD5/PD6)
  * 2026-05-21      CIMC            GD32F407→GD32H759 移植
+ * 2026-06-03      CIMC            UART_DBG→UART4, UART_CAM→UART7
+ * 2026-06-10      CIMC            TOF 改为 UART3 PA0/PA1
  ******************************************************************************/
-
-/***************************************************************
-* GD32F4xx UART 驱动模块 —— 基于 GD32F4xx 标准外设库的串口收发驱动
-* Copyright (c) 2025
-*
-* 本文件是 TOF200F 激光测距工程的一部分
-*
-* 文件名称          uart_driver
-* 开发环境          Eclipse + ARM GCC
-* 适用平台          GD32H7XXVET6
-* 硬件连接
-*                   UART_TOF (模块通信): USART1, PA2-TX / PA3-RX, AF7, APB2
-*                   UART_DBG (调试输出): USART0, PA9-TX / PA10-RX, AF7, APB2
-*                   UART_CAM (摄像头):   USART2, PD5-TX / PD6-RX, AF7, APB1
-*
-* 修改记录
-* 日期                作者          备注
-* 2025-05-06          AI助手        初始版本：中断接收 + 软件FIFO
-* 2025-05-06          AI助手        修复：UART_TOF 改为 USART1(PA2/PA3)，
-*                                   补充RX引脚gpio_output_options_set，
-*                                   启用 USART1_IRQHandler 中断服务函数
-* 2026-05-08          AI助手        添加 UART_CAM (USART2, PD5/PD6)
-*                                   用于接收摄像头识别板数据
-***************************************************************/
 
 #include "uart_driver.h"
 #include "gd32h7xx_rcu.h"
@@ -61,43 +40,47 @@ typedef struct {
 
 static const uart_hw_cfg_t uart_hw_cfg[] = {
     [UART_TOF] = {
-        /* USART1: TX=PA2(AF7), RX=PA3(AF7), 挂在APB2总线 */
-        .usart_base   = USART1,
+        /* UART3: TX=PA0(AF8/DBG_TX), RX=PA1(AF8/DBG_RX)
+         * AF映射来源: GD32H759xx Datasheet — PA0 AF8=UART3_TX, PA1 AF8=UART3_RX */
+        .usart_base   = UART3,
         .tx_port_clk  = RCU_GPIOA,
         .tx_port      = GPIOA,
-        .tx_pin       = GPIO_PIN_2,
+        .tx_pin       = GPIO_PIN_0,
         .rx_port_clk  = RCU_GPIOA,
         .rx_port      = GPIOA,
-        .rx_pin       = GPIO_PIN_3,
-        .af_num       = GPIO_AF_7,
-        .usart_clk    = RCU_USART1,
-        .irqn         = USART1_IRQn,
+        .rx_pin       = GPIO_PIN_1,
+        .af_num       = GPIO_AF_8,
+        .usart_clk    = RCU_UART3,
+        .irqn         = UART3_IRQn,
     },
     [UART_DBG] = {
-        /* USART0: TX=PA9(AF7), RX=PA10(AF7), 挂在APB2总线 */
-        .usart_base   = USART0,
-        .tx_port_clk  = RCU_GPIOA,
-        .tx_port      = GPIOA,
-        .tx_pin       = GPIO_PIN_9,
-        .rx_port_clk  = RCU_GPIOA,
-        .rx_port      = GPIOA,
-        .rx_pin       = GPIO_PIN_10,
-        .af_num       = GPIO_AF_7,
-        .usart_clk    = RCU_USART0,
-        .irqn         = USART0_IRQn,
+        /* UART4: TX=PB5(AF14,J5-38), RX=PB13(AF14,J5-36)
+         * 经跳线帽连板载 CH340，直插 USB 即可用串口助手
+         * AF14 来源: CIMC 04_USB_TTL_CH340 模板 */
+        .usart_base   = UART4,
+        .tx_port_clk  = RCU_GPIOB,
+        .tx_port      = GPIOB,
+        .tx_pin       = GPIO_PIN_5,
+        .rx_port_clk  = RCU_GPIOB,
+        .rx_port      = GPIOB,
+        .rx_pin       = GPIO_PIN_13,
+        .af_num       = GPIO_AF_14,
+        .usart_clk    = RCU_UART4,
+        .irqn         = UART4_IRQn,
     },
     [UART_CAM] = {
-        /* USART2: TX=PD5(AF7), RX=PD6(AF7), 挂在APB1总线 */
-        .usart_base   = USART2,
-        .tx_port_clk  = RCU_GPIOD,
-        .tx_port      = GPIOD,
-        .tx_pin       = GPIO_PIN_5,
-        .rx_port_clk  = RCU_GPIOD,
-        .rx_port      = GPIOD,
-        .rx_pin       = GPIO_PIN_6,
-        .af_num       = GPIO_AF_7,
-        .usart_clk    = RCU_USART2,
-        .irqn         = USART2_IRQn,
+        /* UART7: TX=PC10(AF8), RX=PC11(AF8), 挂在APB1总线
+         * 原为 UART4，因 CH340 占用 UART4，摄像头挪至 UART7 */
+        .usart_base   = UART7,
+        .tx_port_clk  = RCU_GPIOC,
+        .tx_port      = GPIOC,
+        .tx_pin       = GPIO_PIN_10,
+        .rx_port_clk  = RCU_GPIOC,
+        .rx_port      = GPIOC,
+        .rx_pin       = GPIO_PIN_11,
+        .af_num       = GPIO_AF_8,
+        .usart_clk    = RCU_UART7,
+        .irqn         = UART7_IRQn,
     },
 };
 
@@ -283,39 +266,18 @@ uint32_t uart_rx_available(uart_module_enum module)
     return UART_RX_BUF_SIZE - rt->tail + rt->head;                  // 环形折返：head 已绕回
 }
 
-//=================================================== USART 中断服务函数 ====================================================
-
-#if 0  /* USART0 IRQ 在 main.c 中定义时启用，此处禁用避免冲突 */
+//=================================================== UART 中断服务函数 ====================================================
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     USART0 接收中断服务函数
-//-------------------------------------------------------------------------------------------------------------------
-void USART0_IRQHandler(void)
-{
-    if (RESET != usart_interrupt_flag_get(USART0, USART_INT_FLAG_RBNE)) {
-        uint8_t data = usart_data_receive(USART0);
-        uart_runtime_t *rt = &uart_runtime[UART_DBG];
-        uint32_t next = (rt->head + 1) % UART_RX_BUF_SIZE;
-        if (next != rt->tail) {
-            rt->rx_buf[rt->head] = data;
-            rt->head = next;
-        }
-        /* 若FIFO已满，则丢弃该字节（静默丢弃，防止死锁） */
-        rt->last_rx_ms = g_sys_ms;
-    }
-}
-#endif /* 0 */
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     USART1 接收中断服务函数
+// 函数简介     UART3 接收中断服务函数 (TOF200F 激光测距)
 // 备注信息     自动被 NVIC 调用，每收到一个字节触发一次
 //              将接收到的数据存入 UART_TOF 对应的软件FIFO，
 //              用户程序通过 uart_query_byte / uart_read_buffer 读取
 //-------------------------------------------------------------------------------------------------------------------
-void USART1_IRQHandler(void)
+void UART3_IRQHandler(void)
 {
-    if (RESET != usart_interrupt_flag_get(USART1, USART_INT_FLAG_RBNE)) {
-        uint8_t data = usart_data_receive(USART1);
+    if (RESET != usart_interrupt_flag_get(UART3, USART_INT_FLAG_RBNE)) {
+        uint8_t data = usart_data_receive(UART3);
         uart_runtime_t *rt = &uart_runtime[UART_TOF];
         uint32_t next = (rt->head + 1) % UART_RX_BUF_SIZE;
         if (next != rt->tail) {
@@ -328,15 +290,34 @@ void USART1_IRQHandler(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     USART2 接收中断服务函数（摄像头识别板数据）
-// 备注信息     摄像头板识别到垃圾后通过 USART2 发送数据
+// 函数简介     UART7 接收中断服务函数（摄像头识别板数据）
+// 备注信息     摄像头板识别到垃圾后通过 UART7 (PC10/PC11 AF8) 发送数据
 //              用户程序通过 uart_query_byte / uart_read_buffer 读取 UART_CAM
 //-------------------------------------------------------------------------------------------------------------------
-void USART2_IRQHandler(void)
+void UART7_IRQHandler(void)
 {
-    if (RESET != usart_interrupt_flag_get(USART2, USART_INT_FLAG_RBNE)) {
-        uint8_t data = usart_data_receive(USART2);
+    if (RESET != usart_interrupt_flag_get(UART7, USART_INT_FLAG_RBNE)) {
+        uint8_t data = usart_data_receive(UART7);
         uart_runtime_t *rt = &uart_runtime[UART_CAM];
+        uint32_t next = (rt->head + 1) % UART_RX_BUF_SIZE;
+        if (next != rt->tail) {
+            rt->rx_buf[rt->head] = data;
+            rt->head = next;
+        }
+        rt->last_rx_ms = g_sys_ms;
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     UART4 接收中断服务函数（调试串口 → 板载 CH340）
+// 备注信息     调试串口经跳线帽连板载 CH340 (PB5/PB13, AF14)
+//              用户程序通过 uart_query_byte / uart_read_buffer 读取 UART_DBG
+//-------------------------------------------------------------------------------------------------------------------
+void UART4_IRQHandler(void)
+{
+    if (RESET != usart_interrupt_flag_get(UART4, USART_INT_FLAG_RBNE)) {
+        uint8_t data = usart_data_receive(UART4);
+        uart_runtime_t *rt = &uart_runtime[UART_DBG];
         uint32_t next = (rt->head + 1) % UART_RX_BUF_SIZE;
         if (next != rt->tail) {
             rt->rx_buf[rt->head] = data;

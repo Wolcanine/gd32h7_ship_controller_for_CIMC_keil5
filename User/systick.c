@@ -24,7 +24,9 @@ volatile static uint32_t delay;
  ******************************************************************************/
 void systick_config(void)
 {
-    if (SysTick_Config(rcu_clock_freq_get(CK_AHB) / 1000U)) {
+    /* SysTick 使用处理器时钟 (SYSCLK=600MHz)，不是 AHB(300MHz)
+     * 因此用 SystemCoreClock(600M) 而非 CK_AHB(300M) 计算 reload */
+    if (SysTick_Config(SystemCoreClock / 1000U)) {
         while (1) {}
     }
     NVIC_SetPriority(SysTick_IRQn, 0x00U);

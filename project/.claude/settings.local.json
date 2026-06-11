@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp \"D:/BaiDuNetdiskDownload/04 例程模板/00-Project_Template/App/src/main.c\" \"D:/BaiDuNetdiskDownload/04 例程模板/00-Project_Template/User/main.c\")",
+      "Bash(cp \"D:/BaiDuNetdiskDownload/04 例程模板/00-Project_Template/App/src/gd32f4xx_it.c\" \"D:/BaiDuNetdiskDownload/04 例程模板/00-Project_Template/User/gd32h7xx_it.c\")",
+      "Bash(cp \"D:/BaiDuNetdiskDownload/04 例程模板/00-Project_Template/App/src/systick.c\" \"D:/BaiDuNetdiskDownload/04 例程模板/00-Project_Template/User/systick.c\")",
+      "Bash(grep -r \"gd32f4xx\" App/inc App/src User --include=\"*.h\" --include=\"*.c\")",
+      "Bash(grep -r \"GD32F4XX\" App/inc App/src User --include=\"*.h\" --include=\"*.c\")",
+      "Bash(xxd)",
+      "Bash(\"C:/Keil_v5/UV4/UV4.exe\" -b \"CIMC_GD32_Template.uvprojx\" -o \"build.log\")",
+      "Bash(cat \"build.log\")",
+      "Bash(grep -v \"//.*TIMER\\\\|/\\\\*\")",
+      "Bash(ssh -T git@github.com)",
+      "Bash(mkdir -p ~/.ssh)",
+      "Bash(ssh-keyscan github.com)"
+    ]
+  }
+}

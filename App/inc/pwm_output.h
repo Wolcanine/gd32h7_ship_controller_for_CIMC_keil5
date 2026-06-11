@@ -16,19 +16,21 @@
 #include "gd32h7xx.h"
 
 /* ==================== 引脚配置 ==================== */
-#define MOTOR_LEFT_ENA_PORT     GPIOA
-#define MOTOR_LEFT_ENA_PIN      GPIO_PIN_6
+/* 2026-06-03  引脚重新分配：避开摄像头/LCD/SDRAM 冲突引脚               */
+/* 注意: ENA1/ENA2 必须在同一 GPIO 端口 (gd32_driver_pwm.c 单端口限制) */
+#define MOTOR_LEFT_ENA_PORT     GPIOC
+#define MOTOR_LEFT_ENA_PIN      GPIO_PIN_2       /* 原 PA6  → PC2  (PA6 被 LCD D7 占用) */
 #define MOTOR_LEFT_IN1_PORT     GPIOC
-#define MOTOR_LEFT_IN1_PIN      GPIO_PIN_6
-#define MOTOR_LEFT_IN2_PORT     GPIOC
-#define MOTOR_LEFT_IN2_PIN      GPIO_PIN_0
+#define MOTOR_LEFT_IN1_PIN      GPIO_PIN_3       /* 原 PC6  → PC3  (PC6 被摄像头 D0 占用) */
+#define MOTOR_LEFT_IN2_PORT     GPIOD
+#define MOTOR_LEFT_IN2_PIN      GPIO_PIN_4       /* 原 PC0  → PD4  (PC0 被 EXMC/SDRAM 占用) */
 
-#define MOTOR_RIGHT_ENA_PORT    GPIOA
-#define MOTOR_RIGHT_ENA_PIN     GPIO_PIN_7
-#define MOTOR_RIGHT_IN1_PORT    GPIOC
-#define MOTOR_RIGHT_IN1_PIN     GPIO_PIN_7
-#define MOTOR_RIGHT_IN2_PORT    GPIOC
-#define MOTOR_RIGHT_IN2_PIN     GPIO_PIN_1
+#define MOTOR_RIGHT_ENA_PORT    GPIOC
+#define MOTOR_RIGHT_ENA_PIN     GPIO_PIN_12      /* 原 PA7  → PC12 (与 ENA1 同端口 GPIOC) */
+#define MOTOR_RIGHT_IN1_PORT    GPIOG
+#define MOTOR_RIGHT_IN1_PIN     GPIO_PIN_3       /* 原 PC7  → PG3  (PC7 被 LCD D11 占用) */
+#define MOTOR_RIGHT_IN2_PORT    GPIOD
+#define MOTOR_RIGHT_IN2_PIN     GPIO_PIN_2       /* 右电机 IN4: PD2 (J4 Pin 48), 避开 TOF RX PD6 */
 
 #define PWM_MAX_DUTY        0.25f   /* 低速航行限制 */
 

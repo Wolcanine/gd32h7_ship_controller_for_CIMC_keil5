@@ -47,6 +47,9 @@ static void gpio_clk_enable(uint32_t port)
     else if (port == GPIOC) rcu_periph_clock_enable(RCU_GPIOC);
     else if (port == GPIOD) rcu_periph_clock_enable(RCU_GPIOD);
     else if (port == GPIOE) rcu_periph_clock_enable(RCU_GPIOE);
+    else if (port == GPIOF) rcu_periph_clock_enable(RCU_GPIOF);
+    else if (port == GPIOG) rcu_periph_clock_enable(RCU_GPIOG);
+    else if (port == GPIOH) rcu_periph_clock_enable(RCU_GPIOH);
 }
 
 // ---------- 内部：初始化一个输出引脚 ----------
