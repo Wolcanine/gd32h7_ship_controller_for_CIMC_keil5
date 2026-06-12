@@ -13,7 +13,13 @@
  * 2026-05-21      CIMC            GD32F407→GD32H759 移植
  * 2026-06-03      CIMC            引脚重分配：解决摄像头/LCD/SDRAM 冲突
  * 2026-06-10      CIMC            TOF串口改为UART3 PA0/PA1；剔除模块测试代码
+ * 2026-06-11      CIMC            新增 PCA9685_MODULE_TEST + MOTOR_MODULE_TEST
  ******************************************************************************/
+
+/* ==================== 模块测试开关 ==================== */
+/* 同时只启用一个测试宏。注释掉所有测试宏 = 正常全系统模式 */
+#define MOTOR_MODULE_TEST       /* 电机 PWM + PS2 遥控独立测试 (限幅10%) */
+//#define PCA9685_MODULE_TEST    /* 舵机 PCA9685 + PS2 遥控独立测试 */
 
 #include "gd32h7xx.h"
 #include "systick.h"
@@ -67,6 +73,219 @@ int fputc(int ch, FILE *f)
  * 参数      none
  * 返回值    none
  ******************************************************************************/
+#ifdef MOTOR_MODULE_TEST
+/* ==================== 电机 PWM 独立测试模式 ==================== */
+int main(void)
+{
+    float throttle  = 0.0f;   /* 油门 [0.00, 0.20] */
+    float diff      = 0.0f;   /* 差速 [-0.20, 0.20] */
+    float left_duty, right_duty;
+
+    /* 按键上升沿检测：前次状态 */
+    uint8_t p_up = 0, p_down = 0, p_left = 0, p_right = 0;
+    uint8_t p_tri = 0, p_cross = 0, p_square = 0, p_circle = 0;
+    uint8_t changed = 0;
+
+    /* ---- 启用 CPU Cache ---- */
+    SCB_EnableICache();
+    SCB_EnableDCache();
+
+    /* ---- 板级外设 ---- */
+    gd_eval_led_init(LED1);
+    uart_init(UART_DBG, 115200);
+    systick_config();
+
+    printf("\r\n");
+    printf("===============================================\r\n");
+    printf("  Motor PWM Test — PS2 Remote Control\r\n");
+    printf("  Left:  ENA=PC2 IN1=PC3 IN2=PC5  (J4-32/33/34)\r\n");
+    printf("  Right: ENA=PC12 IN1=PF9 IN2=PD2 (J4-47/41/48)\r\n");
+    printf("  Limit: ±20%% (0.20)\r\n");
+    printf("===============================================\r\n\r\n");
+
+    /* ---- PS2 遥控器 ---- */
+    ps2_init();
+    printf("[PS2] DI=PA5 DO=PA7 CS=PB12 CLK=PB10\r\n");
+
+    /* ---- 电机 PWM（上电刹车，duty=0） ---- */
+    pwm_output_init();
+    printf("[PWM] motor outputs initialized → BRAKE (duty=0)\r\n");
+
+    /* ---- 50Hz 控制定时器 ---- */
+    pit_ms_init(PIT_TIMER3, 20);
+    printf("[TIMER3] 50Hz control timer started\r\n");
+
+    printf("\r\n");
+    printf("-----------------------------------------------\r\n");
+    printf("  Controls (edge-triggered, +-0.01 per press):\r\n");
+    printf("  ↑         throttle +1%%\r\n");
+    printf("  ↓         throttle -1%%\r\n");
+    printf("  ←         steer left  (left -, right +)\r\n");
+    printf("  →         steer right (left +, right -)\r\n");
+    printf("  △         EMERGENCY STOP (throttle=0 steer=0)\r\n");
+    printf("  ×         zero steer\r\n");
+    printf("  □         throttle +0.05 (jump)\r\n");
+    printf("  ○         throttle -0.05 (jump)\r\n");
+    printf("-----------------------------------------------\r\n");
+    printf("  Throttle  [0.00 ~ 0.20]  forward only\r\n");
+    printf("  Steer     [-0.20 ~ 0.20] differential\r\n");
+    printf("  Left  = clamp(throttle + steer, 0, 0.20)\r\n");
+    printf("  Right = clamp(throttle - steer, 0, 0.20)\r\n");
+    printf("  LED1 (PF10) = heartbeat 2.5Hz\r\n");
+    printf("===============================================\r\n\r\n");
+
+    printf("MOTOR: T=0.00 D=0.00 | L=0.00 R=0.00 [BRAKE]\r\n");
+
+    uint8_t led_cnt = 0;
+
+    while (1) {
+        /* 等待 50Hz 周期 */
+        while (!timer20ms_flag) __WFI();
+        timer20ms_flag = 0;
+
+        /* 读取 PS2 */
+        ps2_read_data();
+
+        changed = 0;
+
+        /* — 油门 — */
+        if (PS2_Data.up    && !p_up)    { throttle += 0.01f; changed = 1; }
+        if (PS2_Data.down  && !p_down)  { throttle -= 0.01f; changed = 1; }
+        if (PS2_Data.square && !p_square) { throttle += 0.05f; changed = 1; }
+        if (PS2_Data.circle && !p_circle) { throttle -= 0.05f; changed = 1; }
+
+        /* — 差速 — */
+        if (PS2_Data.left  && !p_left)  { diff -= 0.01f; changed = 1; }
+        if (PS2_Data.right && !p_right) { diff += 0.01f; changed = 1; }
+        if (PS2_Data.cross && !p_cross) { diff = 0.0f;  changed = 1; }
+
+        /* — 急停 — */
+        if (PS2_Data.triangle && !p_tri) {
+            throttle = 0.0f; diff = 0.0f; changed = 1;
+        }
+
+        /* — 钳位 — */
+        if (throttle > 0.20f) throttle = 0.20f;
+        if (throttle < 0.00f) throttle = 0.00f;
+        if (diff > 0.20f)     diff = 0.20f;
+        if (diff < -0.20f)    diff = -0.20f;
+
+        /* 计算左右电机 duty */
+        left_duty  = throttle + diff;
+        right_duty = throttle - diff;
+        if (left_duty  > 0.20f) left_duty  = 0.20f;
+        if (left_duty  < 0.00f) left_duty  = 0.00f;
+        if (right_duty > 0.20f) right_duty = 0.20f;
+        if (right_duty < 0.00f) right_duty = 0.00f;
+
+        /* 输出到电机 */
+        pwm_set_left_duty(left_duty);
+        pwm_set_right_duty(right_duty);
+
+        /* 保存按键状态 */
+        p_up = PS2_Data.up;       p_down  = PS2_Data.down;
+        p_left = PS2_Data.left;   p_right = PS2_Data.right;
+        p_tri = PS2_Data.triangle; p_cross = PS2_Data.cross;
+        p_square = PS2_Data.square; p_circle = PS2_Data.circle;
+
+        /* 有变化时打印 */
+        if (changed) {
+            printf("MOTOR: T=%+0.2f D=%+0.2f | L=%+0.2f R=%+0.2f\r\n",
+                   throttle, diff, left_duty, right_duty);
+        }
+
+        /* 心跳 LED */
+        if (++led_cnt >= 20) {
+            led_cnt = 0;
+            gd_eval_led_toggle(LED1);
+        }
+    }
+}
+
+#elif defined(PCA9685_MODULE_TEST)
+/* ==================== PCA9685 舵机独立测试模式 ==================== */
+int main(void)
+{
+    /* ---- 启用 CPU Cache ---- */
+    SCB_EnableICache();
+    SCB_EnableDCache();
+
+    /* ---- 板级外设初始化 ---- */
+    gd_eval_led_init(LED1);
+    uart_init(UART_DBG, 115200);
+    systick_config();
+
+    printf("\r\n");
+    printf("===============================================\r\n");
+    printf("  PCA9685 Servo Test — PS2 Remote Control\r\n");
+    printf("  I2C: PE13(SCL) / PE15(SDA)\r\n");
+    printf("  PCA9685: 0x40, 50Hz, 6-channel servo\r\n");
+    printf("===============================================\r\n\r\n");
+
+    /* ---- I2C 总线初始化 (PE13/PE15) ---- */
+    MyI2C_Init();
+    printf("[I2C] PE13(SCL) PE15(SDA) init OK\r\n");
+
+    /* ---- PCA9685 初始化 ---- */
+    pca9685_init(PCA9685_I2C_ADDR);
+    pca9685_set_pwm_freq(PCA9685_I2C_ADDR, PCA9685_SERVO_FREQ);
+    printf("[PCA9685] PWM freq = %d Hz\r\n", (int)PCA9685_SERVO_FREQ);
+
+    /* ---- 所有舵机归中 (90°) ---- */
+    {
+        uint8_t i;
+        for (i = 0; i < ARM_JOINT_COUNT; i++) {
+            ServoArm_SetAngle(i, 90.0f);
+        }
+        printf("[Servo] all 6 joints → 90° (center)\r\n");
+    }
+
+    /* ---- PS2 遥控器 ---- */
+    ps2_init();
+    printf("[PS2] DI=PA5 DO=PA7 CS=PB12 CLK=PB10\r\n");
+
+    /* ---- 50Hz 控制定时器 ---- */
+    pit_ms_init(PIT_TIMER3, 20);
+    printf("[TIMER3] 50Hz control timer started\r\n");
+
+    printf("\r\n");
+    printf("-----------------------------------------------\r\n");
+    printf("  PS2 Remote Servo Control Mapping:\r\n");
+    printf("  ← / →    Base rotate     (ch0)\r\n");
+    printf("  ↑ / ↓    Shoulder        (ch1)\r\n");
+    printf("  □ / ○    Elbow           (ch2)\r\n");
+    printf("  △ / ×    Wrist pitch     (ch3)\r\n");
+    printf("  L1 / L2  Wrist rotate    (ch4)\r\n");
+    printf("  R1 / R2  Gripper         (ch5)\r\n");
+    printf("-----------------------------------------------\r\n");
+    printf("  LED1 (PF10) = heartbeat (2.5Hz)\r\n");
+    printf("  Serial output = angle changes only\r\n");
+    printf("===============================================\r\n\r\n");
+
+    /* ---- 主循环 ---- */
+    uint8_t led_cnt = 0;
+
+    while (1) {
+        /* 等待 50Hz 周期 */
+        while (!timer20ms_flag) __WFI();
+        timer20ms_flag = 0;
+
+        /* 读取 PS2 遥控器 */
+        ps2_read_data();
+
+        /* PS2 遥控调节舵机角度 */
+        ServoArm_RemoteControl();
+
+        /* 心跳 LED (~2.5Hz = 50Hz / 20) */
+        if (++led_cnt >= 20) {
+            led_cnt = 0;
+            gd_eval_led_toggle(LED1);
+        }
+    }
+}
+
+#else  /* 正常全系统模式 (无测试宏定义) */
+/* ==================== 正常全系统模式 ==================== */
 int main(void)
 {
     /* ---- 启用 CPU Cache — SystemInit() 关了 D-Cache，必须重新打开 ---- */
@@ -167,8 +386,8 @@ int main(void)
         ServoArm_RemoteControl();
         ServoArm_SmoothUpdate();
 
-        /* — 传感器数据输出 (~10Hz, 每 5 帧打印一次) — */
-        if (++print_cnt >= 5) {
+        /* — 传感器数据输出 (~1Hz, 每 50 帧打印一次) — */
+        if (++print_cnt >= 50) {
             print_cnt = 0;
             int32_t gx = MPU6050_GetGyroX_dps100();
             int32_t gy = MPU6050_GetGyroY_dps100();
@@ -193,3 +412,4 @@ int main(void)
 #endif
     }
 }
+#endif /* MOTOR_MODULE_TEST / PCA9685_MODULE_TEST / normal */

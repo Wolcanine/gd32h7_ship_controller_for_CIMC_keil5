@@ -99,8 +99,10 @@ static void pwm_set_motor_duty(
             if (duty > 0) { in1 = 1; in2 = 0; }  // 正转
             else          { in1 = 0; in2 = 1; }  // 反转
 
+            /* 软件 PWM 低电平有效（共阳 LED 逻辑），电机 ENA 高电平有效 → 取反 */
             pwm_val = (uint16_t)((duty >= 0.0f ? duty : -duty) * DUTY_SCALE);
             if (pwm_val > PWM_DUTY_MAX) pwm_val = PWM_DUTY_MAX;
+            pwm_val = PWM_DUTY_MAX - pwm_val;
         }
     }
 
