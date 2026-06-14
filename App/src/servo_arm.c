@@ -1,14 +1,17 @@
 /*******************************************************************************
  * 文件名          servo_arm.c
- * 描述            6 舵机机械臂控制 — PCA9685 驱动 + PS2 遥控 + 逆运动学
+ * 描述            6 舵机机械臂控制 — PCA9685 驱动 + PS2 遥控 + 逆运动学 + 视觉引导
  * MCU             GD32H759IMK6
  * IDE             Keil MDK5 (uVision5)
+ *
+ * 架构说明        原 CAM_CMD 板间通信协议已移除，现通过 vision.h 同板接口获取目标
  *
  * 修改记录
  * 日期            作者            备注
  * 2026-05-08      AI助手          初始版本
  * 2026-05-19      AI助手          脉宽标定 + 逆运动学缓冲移动
  * 2026-05-21      CIMC            GD32F407→GD32H759 移植
+ * 2026-06-12      CIMC            CAM_CMD→Vision 同板接口，新增 CollectTarget
  ******************************************************************************/
 
 #include "servo_arm.h"
@@ -67,7 +70,10 @@ void ServoArm_Init(void)
         arm_target[i] = 90;
         ServoArm_SetAngle(i, 90.0f);
     }
-    printf("ServoArm: initialized, center\r\n");
+
+    /* 初始使能输出，确保舵机上电保持中位 */
+    pca9685_output_enable();
+    printf("ServoArm: initialized, center, OE=enabled\r\n");
 }
 
 /*******************************************************************************
@@ -106,6 +112,7 @@ void ServoArm_SetAction(ArmAction action)
     uint8_t i;
     if (action > ARM_DROP) return;
 
+    pca9685_output_enable();    /* 开始运动前使能舵机输出 */
     for (i = 0; i < ARM_JOINT_COUNT; i++) {
         arm_target[i] = angle_table[action][i];
     }
@@ -114,18 +121,31 @@ void ServoArm_SetAction(ArmAction action)
 }
 
 /*******************************************************************************
- * 函数名    ServoArm_ProcessCmd
- * 描述      解析摄像头 1 字节指令执行预设动作
- * 参数      cmd    bit7=使能, bit[2:0]=动作类型
+ * 函数名    ServoArm_CollectTarget
+ * 描述      根据视觉检测目标坐标执行抓取（占位实现）
+ *           流程：停止当前缓冲 → IK 解算 → 移动到目标 XY → 闭合夹爪 → 抬起
+ * 参数      target      视觉检测目标指针
+ * 备注      TODO: 待视觉模块输出稳定后实现完整抓取时序
+ *                当前仅调用 XY 逆运动学移动 + 触发 COLLECT 预设动作
  ******************************************************************************/
-void ServoArm_ProcessCmd(uint8_t cmd)
+void ServoArm_CollectTarget(const VisionTarget *target)
 {
-    if (!(cmd & CAM_CMD_ENABLE)) return;
+    if (target == NULL || target->confidence < 50) return;
 
-    ArmAction action = (ArmAction)(cmd & CAM_CMD_ACTION);
-    if (action <= ARM_DROP) {
-        ServoArm_SetAction(action);
-    }
+    /* 逆运动学移动到目标坐标 */
+    ServoArm_MoveToXY(target->x_mm, target->y_mm);
+
+    /*
+     * TODO: 完整抓取序列
+     *   1. 等待 SmoothUpdate 完成缓冲移动（smooth_active == 0）
+     *   2. 执行 ARM_COLLECT（闭合夹爪 + 抬起）
+     *   3. 可选：执行 ARM_DROP 投放
+     *
+     *   // 伪代码：
+     *   if (!smooth_active) {
+     *       ServoArm_SetAction(ARM_COLLECT);
+     *   }
+     */
 }
 
 /*******************************************************************************
@@ -146,6 +166,7 @@ void ServoArm_RemoteControl(void)
         PS2_Data.square || PS2_Data.circle || PS2_Data.triangle || PS2_Data.cross ||
         PS2_Data.l1 || PS2_Data.l2 || PS2_Data.r1 || PS2_Data.r2) {
         smooth_active = 0;
+        pca9685_output_enable();    /* PS2 遥控操作时使能舵机输出 */
     }
 
     prev[0] = arm_angle[0];
@@ -216,6 +237,7 @@ void ServoArm_MoveToXY(float x, float y)
     for (int i = 0; i < 4; i++) {
         if (arm_target[i] > 180) arm_target[i] = 180;
     }
+    pca9685_output_enable();    /* 开始运动前使能舵机输出 */
     smooth_active = 1;
     printf("Arm IK: target B%u S%u E%u WP%u (from (%.0f, %.0f))\r\n",
            (unsigned)arm_target[ARM_CH_BASE],
@@ -253,7 +275,10 @@ void ServoArm_SmoothUpdate(void)
         ServoArm_SetAngle(i, (float)cur);
     }
 
-    if (!moving) smooth_active = 0;
+    if (!moving) {
+        smooth_active = 0;
+        pca9685_output_disable();   /* 缓冲移动完成，关闭舵机输出省电 */
+    }
 }
 
 /*******************************************************************************
@@ -263,4 +288,5 @@ void ServoArm_SmoothUpdate(void)
 void ServoArm_CancelMove(void)
 {
     smooth_active = 0;
+    pca9685_output_disable();
 }

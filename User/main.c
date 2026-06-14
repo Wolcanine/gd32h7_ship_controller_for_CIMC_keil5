@@ -10,15 +10,16 @@
  * 2026-05-06      AI助手          初始版本
  * 2026-05-15      AI助手          安全修复：PS2断连检测/MPU6050不死锁/看门狗
  * 2026-05-19      AI助手          机械臂标定+逆运动学
- * 2026-05-21      CIMC            GD32F407→GD32H759 移植
+ * 2026-05-21      CIMC            GD32F407->GD32H759 移植
  * 2026-06-03      CIMC            引脚重分配：解决摄像头/LCD/SDRAM 冲突
  * 2026-06-10      CIMC            TOF串口改为UART3 PA0/PA1；剔除模块测试代码
  * 2026-06-11      CIMC            新增 PCA9685_MODULE_TEST + MOTOR_MODULE_TEST
+ * 2026-06-12      CIMC            双MCU->单H7：UART_CAM->Vision 同板接口，预留视觉API
  ******************************************************************************/
 
 /* ==================== 模块测试开关 ==================== */
 /* 同时只启用一个测试宏。注释掉所有测试宏 = 正常全系统模式 */
-#define MOTOR_MODULE_TEST       /* 电机 PWM + PS2 遥控独立测试 (限幅10%) */
+#define MOTOR_MODULE_TEST       /* 四电机 PWM + PS2 遥控独立测试 (限幅20%, 同侧并联) */
 //#define PCA9685_MODULE_TEST    /* 舵机 PCA9685 + PS2 遥控独立测试 */
 
 #include "gd32h7xx.h"
@@ -38,6 +39,7 @@
 #include "pca9685.h"
 #include "servo_arm.h"
 #include "oled.h"
+#include "vision.h"
 
 /* 50Hz 控制周期标志 — TIMER3 ISR 置位，主循环消费 */
 volatile uint8_t timer20ms_flag = 0;
@@ -48,7 +50,7 @@ volatile uint32_t g_sys_ms = 0;
 /*******************************************************************************
  * 函数名    fputc
  * 描述      printf 重定向到 UART4 (PB5 TX / PB13 RX, AF14, 115200 8N1)
- *           经跳线帽连板载 CH340 → USB 直连电脑串口助手
+ *           经跳线帽连板载 CH340 -> USB 直连电脑串口助手
  *           配合 Keil MicroLIB: 勾选 "Use MicroLIB" 即可
  * 参数      ch    待发送字符
  * 参数      f     文件指针 (MicroLIB 忽略)
@@ -74,12 +76,12 @@ int fputc(int ch, FILE *f)
  * 返回值    none
  ******************************************************************************/
 #ifdef MOTOR_MODULE_TEST
-/* ==================== 电机 PWM 独立测试模式 ==================== */
+/* ==================== 四电机 PWM 独立测试模式 ==================== */
 int main(void)
 {
     float throttle  = 0.0f;   /* 油门 [0.00, 0.20] */
     float diff      = 0.0f;   /* 差速 [-0.20, 0.20] */
-    float left_duty, right_duty;
+    float left_duty, right_duty;  /* 左侧双电机组 / 右侧双电机组 */
 
     /* 按键上升沿检测：前次状态 */
     uint8_t p_up = 0, p_down = 0, p_left = 0, p_right = 0;
@@ -97,9 +99,11 @@ int main(void)
 
     printf("\r\n");
     printf("===============================================\r\n");
-    printf("  Motor PWM Test — PS2 Remote Control\r\n");
-    printf("  Left:  ENA=PC2 IN1=PC3 IN2=PC5  (J4-32/33/34)\r\n");
-    printf("  Right: ENA=PC12 IN1=PF9 IN2=PD2 (J4-47/41/48)\r\n");
+    printf("  4-Motor PWM Test -- PS2 Remote Control\r\n");
+    printf("  Left  (x2): D0=PC2 D1=PC3  (J4-32/33) -> Board A\r\n");
+    printf("  Right (x2): D2=PC5 D3=PC10 (J4-34/51) -> Board B\r\n");
+    printf("  Board: 2x dual H-bridge, inputs paralleled per side\r\n");
+    printf("  All 4 motors at stern, paired left/right\r\n");
     printf("  Limit: ±20%% (0.20)\r\n");
     printf("===============================================\r\n\r\n");
 
@@ -107,9 +111,9 @@ int main(void)
     ps2_init();
     printf("[PS2] DI=PA5 DO=PA7 CS=PB12 CLK=PB10\r\n");
 
-    /* ---- 电机 PWM（上电刹车，duty=0） ---- */
+    /* ---- 电机 PWM（上电滑行，4路全低 -> 四电机断电） ---- */
     pwm_output_init();
-    printf("[PWM] motor outputs initialized → BRAKE (duty=0)\r\n");
+    printf("[PWM] 4-motor outputs initialized -> COAST (all LOW)\r\n");
 
     /* ---- 50Hz 控制定时器 ---- */
     pit_ms_init(PIT_TIMER3, 20);
@@ -118,23 +122,23 @@ int main(void)
     printf("\r\n");
     printf("-----------------------------------------------\r\n");
     printf("  Controls (edge-triggered, +-0.01 per press):\r\n");
-    printf("  ↑         throttle +1%%\r\n");
-    printf("  ↓         throttle -1%%\r\n");
-    printf("  ←         steer left  (left -, right +)\r\n");
-    printf("  →         steer right (left +, right -)\r\n");
-    printf("  △         EMERGENCY STOP (throttle=0 steer=0)\r\n");
-    printf("  ×         zero steer\r\n");
-    printf("  □         throttle +0.05 (jump)\r\n");
-    printf("  ○         throttle -0.05 (jump)\r\n");
+    printf("  UP         throttle +1%%\r\n");
+    printf("  DN         throttle -1%%\r\n");
+    printf("  LT         steer left  (left -, right +)\r\n");
+    printf("  RT         steer right (left +, right -)\r\n");
+    printf("  TR         EMERGENCY STOP (throttle=0 steer=0)\r\n");
+    printf("  X         zero steer\r\n");
+    printf("  SQ         throttle +0.05 (jump)\r\n");
+    printf("  CI         throttle -0.05 (jump)\r\n");
     printf("-----------------------------------------------\r\n");
-    printf("  Throttle  [0.00 ~ 0.20]  forward only\r\n");
-    printf("  Steer     [-0.20 ~ 0.20] differential\r\n");
-    printf("  Left  = clamp(throttle + steer, 0, 0.20)\r\n");
-    printf("  Right = clamp(throttle - steer, 0, 0.20)\r\n");
+    printf("  Throttle         [0.00 ~ 0.20]  forward only\r\n");
+    printf("  Steer            [-0.20 ~ 0.20] differential\r\n");
+    printf("  Left  (x2)  = clamp(throttle + steer, 0, 0.20)\r\n");
+    printf("  Right (x2)  = clamp(throttle - steer, 0, 0.20)\r\n");
     printf("  LED1 (PF10) = heartbeat 2.5Hz\r\n");
     printf("===============================================\r\n\r\n");
 
-    printf("MOTOR: T=0.00 D=0.00 | L=0.00 R=0.00 [BRAKE]\r\n");
+    printf("MOTOR: T=0.00 D=0.00 | L(x2)=0.00 R(x2)=0.00 [COAST]\r\n");
 
     uint8_t led_cnt = 0;
 
@@ -170,7 +174,7 @@ int main(void)
         if (diff > 0.20f)     diff = 0.20f;
         if (diff < -0.20f)    diff = -0.20f;
 
-        /* 计算左右电机 duty */
+        /* 计算左右双电机组 duty */
         left_duty  = throttle + diff;
         right_duty = throttle - diff;
         if (left_duty  > 0.20f) left_duty  = 0.20f;
@@ -178,7 +182,7 @@ int main(void)
         if (right_duty > 0.20f) right_duty = 0.20f;
         if (right_duty < 0.00f) right_duty = 0.00f;
 
-        /* 输出到电机 */
+        /* 输出到四电机 */
         pwm_set_left_duty(left_duty);
         pwm_set_right_duty(right_duty);
 
@@ -190,7 +194,7 @@ int main(void)
 
         /* 有变化时打印 */
         if (changed) {
-            printf("MOTOR: T=%+0.2f D=%+0.2f | L=%+0.2f R=%+0.2f\r\n",
+            printf("MOTOR: T=%+0.2f D=%+0.2f | L(x2)=%+0.2f R(x2)=%+0.2f\r\n",
                    throttle, diff, left_duty, right_duty);
         }
 
@@ -237,7 +241,7 @@ int main(void)
         for (i = 0; i < ARM_JOINT_COUNT; i++) {
             ServoArm_SetAngle(i, 90.0f);
         }
-        printf("[Servo] all 6 joints → 90° (center)\r\n");
+        printf("[Servo] all 6 joints -> 90° (center)\r\n");
     }
 
     /* ---- PS2 遥控器 ---- */
@@ -251,10 +255,10 @@ int main(void)
     printf("\r\n");
     printf("-----------------------------------------------\r\n");
     printf("  PS2 Remote Servo Control Mapping:\r\n");
-    printf("  ← / →    Base rotate     (ch0)\r\n");
-    printf("  ↑ / ↓    Shoulder        (ch1)\r\n");
-    printf("  □ / ○    Elbow           (ch2)\r\n");
-    printf("  △ / ×    Wrist pitch     (ch3)\r\n");
+    printf("  LT / RT    Base rotate     (ch0)\r\n");
+    printf("  UP / DN    Shoulder        (ch1)\r\n");
+    printf("  SQ / CI    Elbow           (ch2)\r\n");
+    printf("  TR / X    Wrist pitch     (ch3)\r\n");
     printf("  L1 / L2  Wrist rotate    (ch4)\r\n");
     printf("  R1 / R2  Gripper         (ch5)\r\n");
     printf("-----------------------------------------------\r\n");
@@ -314,7 +318,7 @@ int main(void)
     Laser_Init();
     printf("TOF laser: OK\r\n");
 
-    /* ---- 电机 PWM 输出 ---- */
+    /* ---- 四电机 PWM 输出 ---- */
     pwm_output_init();
     printf("PWM output: OK\r\n");
 
@@ -338,9 +342,9 @@ int main(void)
     pit_ms_init(PIT_TIMER3, 20);
     printf("Control timer (50Hz): OK\r\n");
 
-    /* ---- 摄像头识别板串口 (UART7 PC10/PC11) ---- */
-    uart_init(UART_CAM, 115200);
-    printf("Camera UART (UART7): OK\r\n");
+    /* ---- 视觉识别模块 (同板集成，替代原 UART_CAM 双MCU方案) ---- */
+    Vision_Init();
+    printf("Vision: OK (placeholder, awaiting camera interface)\r\n");
 
     /* ---- 机械臂舵机 (PCA9685 I2C PWM) ---- */
     ServoArm_Init();
@@ -382,6 +386,9 @@ int main(void)
         MPU6050_Update();                           /* 失败不阻塞，仅跳过本次数据 */
         Laser_GetDistanceCm();                      /* 内部完成 drain + 周期查询 */
 
+        /* — 视觉识别更新 — */
+        Vision_Update();                            /* 每 N 帧触发一次检测，其余帧跳过 */
+
         /* — 机械臂控制 — */
         ServoArm_RemoteControl();
         ServoArm_SmoothUpdate();
@@ -396,20 +403,24 @@ int main(void)
             int32_t ay = MPU6050_GetAccelY_mg();
             int32_t az = MPU6050_GetAccelZ_mg();
             uint16_t dist = Laser_GetDistanceCm();
+            uint8_t  vis_cnt = 0;
+            const VisionFrame *vf = Vision_GetFrame();
+            if (vf) vis_cnt = vf->count;
             printf("PS2:%.2f/%.2f GYRO:%+04ld/%+04ld/%+04ld "
-                   "ACCEL:%+05ld/%+05ld/%+05ld LASER:%4u MODE:0x%02X\r\n",
+                   "ACCEL:%+05ld/%+05ld/%+05ld LASER:%4u VIS:%u MODE:0x%02X\r\n",
                    (double)ps2_get_throttle(), (double)ps2_get_steering(),
                    (long)gx, (long)gy, (long)gz,
                    (long)ax, (long)ay, (long)az,
-                   (unsigned)dist, (unsigned)ps2_get_mode());
+                   (unsigned)dist, (unsigned)vis_cnt, (unsigned)ps2_get_mode());
         }
 
-#if 0   /* TODO: 传感器调试结束后启用摄像头指令处理 */
-        uint8_t cam_cmd;
-        while (uart_query_byte(UART_CAM, &cam_cmd)) {
-            ServoArm_ProcessCmd(cam_cmd);
+        /* — 视觉引导抓取 (自动模式 + 检测到目标时触发) — */
+        if (Vision_HasTarget() && ps2_get_mode() == PS2_MODE_DIGITAL) {
+            VisionTarget t = Vision_GetClosestTarget();
+            if (t.confidence > 50) {
+                ServoArm_CollectTarget(&t);
+            }
         }
-#endif
     }
 }
 #endif /* MOTOR_MODULE_TEST / PCA9685_MODULE_TEST / normal */

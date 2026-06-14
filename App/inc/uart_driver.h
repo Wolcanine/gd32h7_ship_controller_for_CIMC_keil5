@@ -13,7 +13,9 @@
 * 硬件连接
 *                   UART_TOF (TOF200F 激光): UART3,  PA0-TX(J5-44) / PA1-RX(J5-43), AF8
 *                   UART_DBG (调试/CH340):  UART4,  PB5-TX(J5-38) / PB13-RX(J5-36), AF14
-*                   UART_CAM (摄像头识别板): UART7,  PC10-TX(J4-51) / PC11-RX(J4-52), AF8
+*                   UART_CAM (已废弃):      UART7,  PC10-TX(J4-51) / PC11-RX(J4-52), AF8
+*                                             原用于双 MCU 板间通信 (H7↔F4)，现已改为同板视觉方案
+*                                             PC10/PC11 已释放，可重新分配
 *
 * 修改记录
 * 日期                作者          备注
@@ -22,6 +24,7 @@
 * 2026-05-21          CIMC          GD32F407→GD32H759 移植
 * 2026-06-03          CIMC          引脚重分配：UART_DBG→UART4, UART_CAM→UART7
 * 2026-06-10          CIMC          TOF 串口改为 UART3 PA0/PA1 (原 USART1 通信失败)
+* 2026-06-12          CIMC          UART_CAM 标记废弃（双MCU→单H7），PC10/PC11 释放
 *********************************************************************************************************************/
 
 #ifndef __UART_DRIVER_H

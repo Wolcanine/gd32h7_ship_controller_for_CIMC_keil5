@@ -75,6 +75,12 @@ static uint8_t read_reg(uint8_t dev_addr, uint8_t reg)
 
 void pca9685_init(uint8_t addr)
 {
+    /* ---- OE 引脚：推挽输出，初始拉低使能 ---- */
+    rcu_periph_clock_enable(PCA9685_OE_RCU);
+    gpio_mode_set(PCA9685_OE_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, PCA9685_OE_PIN);
+    gpio_output_options_set(PCA9685_OE_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_60MHZ, PCA9685_OE_PIN);
+    gpio_bit_reset(PCA9685_OE_PORT, PCA9685_OE_PIN);   /* OE=L → 输出使能 */
+
     /* MODE1: 复位到默认值（使能 AI, 清除 SLEEP） */
     write_reg(addr, PCA9685_MODE1, 0x00);
 
@@ -86,6 +92,24 @@ void pca9685_init(uint8_t addr)
     } else {
         printf(" => CHECK HARDWARE (OE? V+? wiring?)\r\n");
     }
+}
+
+/*******************************************************************************
+ * 函数名    pca9685_output_enable
+ * 描述      拉低 OE 引脚，使能所有 PWM 通道输出（舵机上电保持角度）
+ ******************************************************************************/
+void pca9685_output_enable(void)
+{
+    gpio_bit_reset(PCA9685_OE_PORT, PCA9685_OE_PIN);
+}
+
+/*******************************************************************************
+ * 函数名    pca9685_output_disable
+ * 描述      拉高 OE 引脚，关闭所有 PWM 通道输出（舵机断电 limp，省电 + 防抖）
+ ******************************************************************************/
+void pca9685_output_disable(void)
+{
+    gpio_bit_set(PCA9685_OE_PORT, PCA9685_OE_PIN);
 }
 
 void pca9685_set_pwm_freq(uint8_t addr, float freq)

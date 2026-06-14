@@ -108,7 +108,7 @@ void ShipController_Update(ShipController *sc, float throttle, float steering)
             sc->yaw_integral = -sc->yaw_integral_limit;
     }
 
-    // 6. 左右电机分配
+    // 6. 左右双电机组分配
     float left  = base_duty - diff;
     float right = base_duty + diff;
 
