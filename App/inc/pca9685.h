@@ -12,9 +12,9 @@
 
 /* ==================== OE 使能引脚 ==================== */
 /* PCA9685 OE 引脚 — 低电平有效: L=输出使能, H=输出关闭(高阻)
- * PC12 (J4-47) 原为旧电机驱动板 ENA，已释放，复用为舵机使能 */
+ * PC11 (J4-52) 原 UART_CAM RX，已释放，复用为舵机使能 */
 #define PCA9685_OE_PORT         GPIOC
-#define PCA9685_OE_PIN          GPIO_PIN_12
+#define PCA9685_OE_PIN          GPIO_PIN_11
 #define PCA9685_OE_RCU          RCU_GPIOC
 
 // ==================== 初始化与配置 ====================

@@ -30,6 +30,11 @@
 /* 方向切换刹车保持周期数（50Hz × 5 = 100ms） */
 #define BRAKE_CYCLES 5
 
+/* 启动突加参数: 油门 >10% 时先给 70% 持续 0.1s 克服静摩擦 */
+#define START_THRESHOLD   0.10f
+#define START_KICK_DUTY   0.70f
+#define START_KICK_FRAMES 5        /* 50Hz × 5 = 100ms */
+
 /* ==================== 电机方向切换状态 ==================== */
 typedef struct {
     int8_t  brake_cnt;      /* >0: 正在刹车倒计时 (50Hz 帧)    */
@@ -38,6 +43,34 @@ typedef struct {
 
 static MotorSwitchState left_sw  = {0, 0.0f};
 static MotorSwitchState right_sw = {0, 0.0f};
+
+/* ==================== 油门映射 ==================== */
+/*
+ *  target    = 0  → internal = 0
+ *  target    > 0  → internal = 0.10 + target × 0.90
+ *
+ *  用户设置 1% → 内部 10.9%  (刚能维持转动)
+ *  用户设置 100% → 内部 100%
+ */
+
+typedef struct {
+    float  target;
+    float  internal;
+    int8_t kick_cnt;    /* >0 = 突加倒计时 */
+} MotorThrottle;
+
+#define THR_MIN_RUN    0.10f   /* 电机最小运行油门    */
+#define THR_KICK_DUTY  0.70f   /* 启动突加油门        */
+#define THR_KICK_TICKS 5       /* 突加帧数 (50Hz×5=100ms) */
+
+static MotorThrottle left_thr  = {0.0f, 0.0f, 0};
+static MotorThrottle right_thr = {0.0f, 0.0f, 0};
+
+static float motor_throttle_map(float t)
+{
+    if (t <= 0.0f) return 0.0f;
+    return THR_MIN_RUN + t * (1.0f - THR_MIN_RUN);
+}
 
 /* ==================== 内部：双引脚 H 桥控制 ==================== */
 /*!
@@ -72,6 +105,9 @@ static void pwm_set_motor_duty(
     if (sw->brake_cnt > 0) {
         /* 刹车保护倒计时：两引脚均置高 → 电机绕组短路制动 */
         sw->brake_cnt--;
+        if (sw->brake_cnt == 0) {
+            sw->last_duty = duty;   /* 刹车结束，同步方向防止重复触发 */
+        }
         pwm_a = 0;                  /* 0 → 100% HIGH = 逻辑 1 */
         pwm_b = 0;
     }
@@ -143,30 +179,75 @@ void pwm_output_init(void)
     left_sw.last_duty  = 0.0f;
     right_sw.brake_cnt = 0;
     right_sw.last_duty = 0.0f;
+
+    left_thr  = (MotorThrottle){0.0f, 0.0f, 0};
+    right_thr = (MotorThrottle){0.0f, 0.0f, 0};
+}
+
+/* ==================== 油门更新 (映射 + 启动突加) ==================== */
+static void motor_throttle_update(MotorThrottle *thr)
+{
+    float mapped = motor_throttle_map(thr->target);
+
+    /* 归零: 立即停止 */
+    if (mapped == 0.0f) {
+        thr->internal = 0.0f;
+        thr->kick_cnt = 0;
+        return;
+    }
+
+    /* 突加进行中 */
+    if (thr->kick_cnt > 0) {
+        thr->kick_cnt--;
+        if (thr->kick_cnt == 0) {
+            thr->internal = mapped;          /* 突加结束，降到映射值 */
+        }
+        /* 突加期间不变 (保持 THR_KICK_DUTY) */
+        return;
+    }
+
+    /* 检测启动: 之前停止 → 现在有油门 */
+    if (thr->internal == 0.0f) {
+        thr->kick_cnt = THR_KICK_TICKS;
+        thr->internal = THR_KICK_DUTY;       /* 突加启动 */
+        return;
+    }
+
+    /* 已在转动: 平滑跟随映射值 */
+    thr->internal = mapped;
 }
 
 /*******************************************************************************
- * 函数名    pwm_set_left_duty
- * 描述      设置左侧双电机组 占空比
+ * 函数名    pwm_set_left_duty / pwm_set_right_duty
+ * 描述      设置目标油门。实际输出由 motor_throttle_update 每帧管理。
  * 参数      duty    -1.0~1.0, 正=前进, 负=后退, 0=停止
  ******************************************************************************/
 void pwm_set_left_duty(float duty)
 {
-    pwm_set_motor_duty(
-        MOTOR_LEFT_D0_PORT,  MOTOR_LEFT_D0_PIN,
-        MOTOR_LEFT_D1_PORT,  MOTOR_LEFT_D1_PIN,
-        duty, &left_sw);
+    left_thr.target = duty;
+}
+
+void pwm_set_right_duty(float duty)
+{
+    right_thr.target = duty;
 }
 
 /*******************************************************************************
- * 函数名    pwm_set_right_duty
- * 描述      设置右侧双电机组 占空比
- * 参数      duty    -1.0~1.0, 正=前进, 负=后退, 0=停止
+ * 函数名    pwm_throttle_tick
+ * 描述      50Hz 调用: 更新油门状态机 + 输出到硬件
  ******************************************************************************/
-void pwm_set_right_duty(float duty)
+void pwm_throttle_tick(void)
 {
+    motor_throttle_update(&left_thr);
+    motor_throttle_update(&right_thr);
+
+    pwm_set_motor_duty(
+        MOTOR_LEFT_D0_PORT,  MOTOR_LEFT_D0_PIN,
+        MOTOR_LEFT_D1_PORT,  MOTOR_LEFT_D1_PIN,
+        left_thr.internal, &left_sw);
+
     pwm_set_motor_duty(
         MOTOR_RIGHT_D2_PORT,  MOTOR_RIGHT_D2_PIN,
         MOTOR_RIGHT_D3_PORT,  MOTOR_RIGHT_D3_PIN,
-        duty, &right_sw);
+        right_thr.internal, &right_sw);
 }

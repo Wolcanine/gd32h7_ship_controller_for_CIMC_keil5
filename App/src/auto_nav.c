@@ -58,8 +58,6 @@ void AutoNav_Init(void)
     turn_start_yaw  = 0.0f;
     auto_throttle   = 0.0f;
     auto_steering   = 0.0f;
-
-    Laser_Init();
 }
 
 // ==================== 陀螺仪偏航角积分（每周期 20ms 调用一次） ====================

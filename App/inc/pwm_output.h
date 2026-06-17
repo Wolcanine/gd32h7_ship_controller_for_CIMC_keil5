@@ -45,10 +45,11 @@
 #define MOTOR_RIGHT_D3_PORT    GPIOC
 #define MOTOR_RIGHT_D3_PIN     GPIO_PIN_10      /* J4-51, D3 — 右侧双电机 反转 PWM (驱动板B CH1+CH2 并联, 原 UART_CAM TX) */
 
-#define PWM_MAX_DUTY        0.25f   /* 低速航行限制 */
+#define PWM_MAX_DUTY        1.00f   /* 全速测试 */
 
 void pwm_output_init(void);
-void pwm_set_left_duty(float duty);     /* -1.0~1.0, 左侧双电机组 */
-void pwm_set_right_duty(float duty);    /* -1.0~1.0, 右侧双电机组 */
+void pwm_set_left_duty(float duty);     /* 设置目标油门 (由 tick 管理实际输出) */
+void pwm_set_right_duty(float duty);
+void pwm_throttle_tick(void);           /* 50Hz: 油门状态机更新 + 硬件输出 */
 
 #endif

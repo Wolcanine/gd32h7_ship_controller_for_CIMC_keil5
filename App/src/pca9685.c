@@ -33,6 +33,10 @@
 #define MODE1_SLEEP          0x10
 #define MODE1_ALLCALL        0x01
 
+#define MODE2_OCH            0x08    // Output change on STOP (not ACK)
+#define MODE2_OUTDRV         0x04    // Totem-pole output (not open-drain)
+#define MODE2_OUTNE_HIZ      0x02    // OUTNE: high-impedance when OE=1
+
 // ==================== 内部：I2C 读写原语 ====================
 
 static void write_reg(uint8_t dev_addr, uint8_t reg, uint8_t data)
@@ -83,6 +87,18 @@ void pca9685_init(uint8_t addr)
 
     /* MODE1: 复位到默认值（使能 AI, 清除 SLEEP） */
     write_reg(addr, PCA9685_MODE1, 0x00);
+
+    /* MODE2: 推挽输出 + STOP 时更新（避免开漏浮空导致舵机抖振） */
+    write_reg(addr, PCA9685_MODE2, MODE2_OUTDRV | MODE2_OCH);
+
+    /* 回读 MODE2 确认配置 */
+    {
+        uint8_t m2 = read_reg(addr, PCA9685_MODE2);
+        printf("PCA9685(0x%02X) MODE2 = 0x%02X (OUTDRV=%d OCH=%d)\r\n",
+               addr, (unsigned)m2,
+               (int)((m2 & MODE2_OUTDRV) ? 1 : 0),
+               (int)((m2 & MODE2_OCH) ? 1 : 0));
+    }
 
     /* 回读验证：确认 I2C 通信正常 */
     uint8_t val = read_reg(addr, PCA9685_MODE1);
