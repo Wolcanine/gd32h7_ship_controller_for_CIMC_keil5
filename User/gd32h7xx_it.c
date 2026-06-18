@@ -17,6 +17,8 @@
 #include "main.h"
 #include "systick.h"
 #include "gd32_driver_pwm.h"
+#include "step_motor.h"
+#include "sw_uart.h"
 
 extern volatile uint32_t g_sys_ms;
 
@@ -89,4 +91,28 @@ void TIMER3_IRQHandler(void)
 void TIMER4_IRQHandler(void)
 {
     pwm_isr_handler();
+}
+
+/*******************************************************************************
+ * 函数名    TIMER6_IRQHandler
+ * 描述      步进电机脉冲产生中断 (2kHz)，通过软件分频控制步进速率
+ ******************************************************************************/
+void TIMER6_IRQHandler(void)
+{
+    if (timer_interrupt_flag_get(TIMER6, TIMER_INT_FLAG_UP) == SET) {
+        timer_interrupt_flag_clear(TIMER6, TIMER_INT_FLAG_UP);
+        Stepper_Step_IRQHandler();
+    }
+}
+
+/*******************************************************************************
+ * 函数名    TIMER1_IRQHandler
+ * 描述      软件 UART 位定时中断 (345.6kHz)，驱动两路全双工收发状态机
+ ******************************************************************************/
+void TIMER1_IRQHandler(void)
+{
+    if (timer_interrupt_flag_get(TIMER1, TIMER_INT_FLAG_UP) == SET) {
+        timer_interrupt_flag_clear(TIMER1, TIMER_INT_FLAG_UP);
+        SwUart_ISR();
+    }
 }

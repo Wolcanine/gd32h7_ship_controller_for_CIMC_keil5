@@ -1,0 +1,202 @@
+GD32H759 AI 工程接线汇总
+========================
+
+工程路径:
+C:\Users\25715\Desktop\竞赛\AIproject_26pm\test_1_ai_v23_memory_plan_full_project
+
+说明:
+- 本文件按当前工程代码实际 GPIO 配置整理。
+- 所有外设必须共地。
+- 摄像头、OLED、红外、触摸逻辑建议使用 3.3V。
+- LCD 供电按模块丝印接，信号脚不要接 5V。
+
+
+一、拍照按键
+------------
+
+按键一端 -> PC13
+按键另一端 -> GND
+
+说明:
+- PC13 内部上拉。
+- 按下为低电平触发。
+- 在实时监控界面中，PC13 可以触发拍照推理。
+
+
+二、红外接收模块
+----------------
+
+OUT / S -> PH15
+VCC     -> 3.3V
+GND     -> GND
+
+说明:
+- 当前工程使用 NEC 红外协议。
+- OK 键命令码按 0x1C 处理。
+- 红外 OK 可以触发拍照推理。
+
+
+三、OLED 0.96 寸 I2C 屏
+----------------------
+
+SCL -> PD12
+SDA -> PD13
+VCC -> 3.3V
+GND -> GND
+
+说明:
+- 当前工程使用软件 I2C。
+- OLED 地址为 0x3C。
+- OLED 显示状态、识别结果、置信度和 AI 运行时间。
+
+
+四、触摸屏 XPT2046 / 电阻触摸
+-----------------------------
+
+T_CS        -> PF10
+T_CLK       -> PC12
+T_DIN/MOSI  -> PF9
+T_DO/MISO   -> PD2
+T_PEN       -> 当前代码未启用，可不接
+
+可选:
+T_PEN -> PF7
+
+说明:
+- 当前工程中 UI_TOUCH_USE_PEN = 0，所以 T_PEN 不接也能轮询读取。
+- 你之前修改过的触摸线是:
+  T_CLK = PC12
+  T_DO / MISO = PD2
+- 如果触摸没有接线，主界面的触摸按钮和 BACK 不会响应。
+
+
+五、OV2640 摄像头
+-----------------
+
+SCL / SIOC -> PB4
+SDA / SIOD -> PB7
+RST        -> PB0
+PWDN       -> 接地 / 硬件拉低
+XCLK       -> PG7
+PCLK       -> PE3
+HREF       -> PA4
+VSYNC      -> PG9
+D0         -> PC6
+D1         -> PA10
+D2         -> PC8
+D3         -> PC9
+D4         -> PE4
+D5         -> PB6
+D6         -> PB8
+D7         -> PE6
+VCC        -> 3.3V
+GND        -> GND
+
+说明:
+- 摄像头输出 RGB565。
+- 工程使用 320x240 预览，中间裁剪 160x160 做拍照推理。
+
+
+六、3.5 寸 TFT LCD 并口
+----------------------
+
+控制线:
+RS / DC -> PB3
+WR      -> PD5
+CS      -> PD7
+RD      -> 3.3V
+BL      -> PB9
+RST     -> 开发板 NRST / RESET
+
+数据线:
+D0  -> PC1
+D1  -> PD11
+D2  -> PA9
+D3  -> PH10
+D4  -> PC4
+D5  -> PB1
+D6  -> PG10
+D7  -> PA6
+D8  -> PB11
+D9  -> PH4
+D10 -> PD3
+D11 -> PC7
+D12 -> PG12
+D13 -> PA8
+D14 -> PA15
+D15 -> PA3
+
+说明:
+- 当前代码不使用 PB5 做 LCD RST。
+- LCD RST 请接开发板 NRST / RESET，或者按你的底板复位线路接。
+- RD 当前没有接 MCU 读信号，代码里按强制 ID 初始化。
+
+
+七、串口调试 UART3
+------------------
+
+GD32 PA0 -> USB-TTL RXD
+GD32 PA1 -> USB-TTL TXD
+GD32 GND -> USB-TTL GND
+
+串口参数:
+921600 baud, 8N1
+
+说明:
+- 当前 printf 输出走 UART3。
+- 不要把 PA9 / PA10 当调试串口用:
+  PA9  当前是 LCD D2
+  PA10 当前是摄像头 D1
+
+
+八、W9825 SDRAM / 外部 RAM
+-------------------------
+
+说明:
+- 这部分通常是板载或底板固定走线，不建议用杜邦线手飞。
+- 当前工程把 AI arena、输入缓冲、上次拍照图像放在 SDRAM，基地址 0xC0000000。
+
+当前工程涉及的 SDRAM 复用 GPIO:
+PB2
+PC0
+PD0, PD1, PD8, PD9, PD10, PD14, PD15
+PE0, PE1, PE7, PE8, PE9, PE10, PE11, PE12, PE14
+PF0, PF1, PF2, PF3, PF4, PF5, PF11, PF12, PF13, PF14, PF15
+PG0, PG1, PG2, PG4, PG5, PG8, PG15
+PH2, PH3, PH5
+
+备注:
+- 工程实际编译使用 Utilities\gd32h759i_eval_exmc_sdram.c。
+- SDRAM 通过 EXMC 使用，工程运行时会做 SDRAM 自检。
+- 如果 SDRAM 不稳定，表现可能是 AI 推理异常、BusFault、图像缓存异常。
+
+
+九、板载 LED / 备用按键
+----------------------
+
+LED1 -> PH10
+LED2 -> PA6
+
+板载按键定义:
+WAKEUP -> PA0
+TAMPER -> PC13
+USER   -> PF8
+
+注意:
+- 当前 AI 工程主要使用 PC13 作为拍照键。
+- PA0 当前被 UART3_TX 使用，所以不要再同时拿它当普通按键。
+- PA6 当前也被 LCD D7 使用，不建议再当 LED2 控制。
+
+
+十、最容易接错的地方
+--------------------
+
+1. 触摸 T_CLK 是 PC12，不是旧版本别的脚。
+2. 触摸 T_DO / MISO 是 PD2。
+3. 红外 OUT / S 是 PH15。
+4. 拍照按键是 PC13 对 GND，低电平触发。
+5. 调试串口是 PA0 / PA1，波特率 921600。
+6. LCD RST 当前不走 PB5，接 NRST / RESET。
+7. 所有模块必须共地。
+8. 3.3V 逻辑模块不要接 5V 信号。
+

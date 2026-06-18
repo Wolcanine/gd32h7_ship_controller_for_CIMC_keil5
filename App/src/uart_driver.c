@@ -82,6 +82,36 @@ static const uart_hw_cfg_t uart_hw_cfg[] = {
         .usart_clk    = RCU_UART7,
         .irqn         = UART7_IRQn,
     },
+    [UART_USART1] = {
+        /* USART1: TX=PA2(AF7,J4-21), RX=PD6(AF7,J4-23)
+         * 引脚来源: GD32H759 数据手册 — PA2 AF7=USART1_TX, PD6 AF7=USART1_RX
+         * 原 PA2/PD6 被步进电机占用，已搬迁至 PG3/PH6 */
+        .usart_base   = USART1,
+        .tx_port_clk  = RCU_GPIOA,
+        .tx_port      = GPIOA,
+        .tx_pin       = GPIO_PIN_2,
+        .rx_port_clk  = RCU_GPIOD,
+        .rx_port      = GPIOD,
+        .rx_pin       = GPIO_PIN_6,
+        .af_num       = GPIO_AF_7,
+        .usart_clk    = RCU_USART1,
+        .irqn         = USART1_IRQn,
+    },
+    [UART_UART6] = {
+        /* UART6: TX=PF7(AF6,J4-17), RX=PF6(AF6,J4-19)
+         * 引脚来源: GD32H759 数据手册 — PF7 AF6=UART6_TX, PF6 AF6=UART6_RX
+         * ⚠ PF7 在另一工程用作 XPT2046 T_PEN (可选, 当前未启用) */
+        .usart_base   = UART6,
+        .tx_port_clk  = RCU_GPIOF,
+        .tx_port      = GPIOF,
+        .tx_pin       = GPIO_PIN_7,
+        .rx_port_clk  = RCU_GPIOF,
+        .rx_port      = GPIOF,
+        .rx_pin       = GPIO_PIN_6,
+        .af_num       = GPIO_AF_6,
+        .usart_clk    = RCU_UART6,
+        .irqn         = UART6_IRQn,
+    },
 };
 
 //=================================================== 运行时数据 ====================================================
@@ -94,7 +124,7 @@ typedef struct {
     volatile uint32_t last_rx_ms;               /* 最后一次接收到数据的时间戳(ms) */
 } uart_runtime_t;
 
-static uart_runtime_t uart_runtime[3];          /* 三个模块各自的运行时数据 */
+static uart_runtime_t uart_runtime[5];          /* 五个模块各自的运行时数据 */
 
 //=================================================== 初始化函数 ====================================================
 
@@ -318,6 +348,44 @@ void UART4_IRQHandler(void)
     if (RESET != usart_interrupt_flag_get(UART4, USART_INT_FLAG_RBNE)) {
         uint8_t data = usart_data_receive(UART4);
         uart_runtime_t *rt = &uart_runtime[UART_DBG];
+        uint32_t next = (rt->head + 1) % UART_RX_BUF_SIZE;
+        if (next != rt->tail) {
+            rt->rx_buf[rt->head] = data;
+            rt->head = next;
+        }
+        rt->last_rx_ms = g_sys_ms;
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     USART1 接收中断服务函数（预留串口1）
+// 备注信息     PA2(AF7,USART1_TX) / PD6(AF7,USART1_RX)
+//              用户程序通过 uart_query_byte / uart_read_buffer 读取 UART_USART1
+//-------------------------------------------------------------------------------------------------------------------
+void USART1_IRQHandler(void)
+{
+    if (RESET != usart_interrupt_flag_get(USART1, USART_INT_FLAG_RBNE)) {
+        uint8_t data = usart_data_receive(USART1);
+        uart_runtime_t *rt = &uart_runtime[UART_USART1];
+        uint32_t next = (rt->head + 1) % UART_RX_BUF_SIZE;
+        if (next != rt->tail) {
+            rt->rx_buf[rt->head] = data;
+            rt->head = next;
+        }
+        rt->last_rx_ms = g_sys_ms;
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     UART6 接收中断服务函数（预留串口2）
+// 备注信息     PF7(AF6,UART6_TX) / PF6(AF6,UART6_RX)
+//              用户程序通过 uart_query_byte / uart_read_buffer 读取 UART_UART6
+//-------------------------------------------------------------------------------------------------------------------
+void UART6_IRQHandler(void)
+{
+    if (RESET != usart_interrupt_flag_get(UART6, USART_INT_FLAG_RBNE)) {
+        uint8_t data = usart_data_receive(UART6);
+        uart_runtime_t *rt = &uart_runtime[UART_UART6];
         uint32_t next = (rt->head + 1) % UART_RX_BUF_SIZE;
         if (next != rt->tail) {
             rt->rx_buf[rt->head] = data;

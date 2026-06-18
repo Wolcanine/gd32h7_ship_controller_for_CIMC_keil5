@@ -14,6 +14,7 @@
 //#define MOTOR_MODULE_TEST
 //#define PCA9685_MODULE_TEST
 //#define DIRECT_SERVO_SWEEP
+#define SW_UART_ECHO_TEST
 
 #include "gd32h7xx.h"
 #include "systick.h"
@@ -30,6 +31,8 @@
 #include "gd32_driver_pit.h"
 #include "pca9685.h"
 #include "servo_arm.h"
+#include "step_motor.h"
+#include "sw_uart.h"
 
 /* ==================== 全局变量 ==================== */
 volatile uint8_t  timer20ms_flag = 0;   /* 50Hz 周期标志, TIMER3 ISR 置位 */
@@ -54,6 +57,8 @@ static void System_Init(void)
 }
 
 /* ==================== 正常全系统模式 ==================== */
+#if !defined(MOTOR_MODULE_TEST) && !defined(PCA9685_MODULE_TEST) && \
+    !defined(DIRECT_SERVO_SWEEP) && !defined(SW_UART_ECHO_TEST)
 static void System_Run(void)
 {
     /* ---- PS2 ---- */
@@ -87,6 +92,10 @@ static void System_Run(void)
     /* ---- 机械臂舵机 ---- */
     ServoArm_Init();
     printf("[ServoArm] OK\r\n");
+
+    /* ---- 步进电机传送带 ---- */
+    Stepper_Init();
+    printf("[Stepper] OK (TIMER6 2kHz)\r\n");
 
     /* ---- 50Hz 控制定时器 ---- */
     pit_ms_init(PIT_TIMER3, 20);
@@ -124,6 +133,15 @@ static void System_Run(void)
         ServoArm_HandlePresets();
         ServoArm_SmoothUpdate();
 
+        /* 传送带 (步进电机): PS2 L1=收垃圾(正转), L2=释放(反转), 否则停止 */
+        if (PS2_Data.l1) {
+            Stepper_SetSpeed(1, 4);     /* 正转, 500Hz 步进 */
+        } else if (PS2_Data.l2) {
+            Stepper_SetSpeed(-1, 4);    /* 反转, 500Hz 步进 */
+        } else {
+            Stepper_SetSpeed(0, 0);     /* 停止 */
+        }
+
         /* 1Hz 上报 */
         if (++print_cnt >= 50) {
             print_cnt = 0;
@@ -136,9 +154,11 @@ static void System_Run(void)
                    (long)MPU6050_GetAccelZ_mg(),
                    (unsigned)Laser_GetDistanceCm(), (unsigned)ps2_get_mode());
             ServoArm_PrintStatus();
+            printf("STEP: %ld steps\r\n", (long)Stepper_GetCurStep());
         }
     }
 }
+#endif /* !MOTOR_MODULE_TEST && !PCA9685_MODULE_TEST && !DIRECT_SERVO_SWEEP && !SW_UART_ECHO_TEST */
 
 /* ==================== 电机模块测试 ==================== */
 #ifdef MOTOR_MODULE_TEST
@@ -287,6 +307,54 @@ static void test_sweep(void)
 }
 #endif
 
+/* ==================== 软串口 PC 回显测试 ==================== */
+#ifdef SW_UART_ECHO_TEST
+static void test_sw_uart_echo(void)
+{
+    uint32_t sw1_rx_cnt = 0, sw1_tx_cnt = 0;
+    uint32_t sw2_rx_cnt = 0, sw2_tx_cnt = 0;
+    uint32_t last_print_ms = 0;
+    uint8_t  byte;
+
+    /* 全部 printf 在 SwUart_Init 之前, 确保能看到 */
+    printf("\r\n===== SW UART Echo to PC =====\r\n");
+    printf("CH1: PE2/PE5  CH2: PF7/PF6  115200\r\n");
+
+    printf("Calling SwUart_Init...\r\n");
+    SwUart_Init();
+    printf("SwUart_Init done.  ISR=%u\r\n", (unsigned)sw_isr_count);
+    printf("Ready.  Open CH1/CH2 terminals, type to echo.\r\n\r\n");
+
+    while (1)
+    {
+        /* ---- CH1 回显 ---- */
+        if (SwUart1_QueryByte(&byte)) {
+            sw1_rx_cnt++;
+            SwUart1_SendByte(byte);
+            sw1_tx_cnt++;
+        }
+
+        /* ---- CH2 回显 ---- */
+        if (SwUart2_QueryByte(&byte)) {
+            sw2_rx_cnt++;
+            SwUart2_SendByte(byte);
+            sw2_tx_cnt++;
+        }
+
+        /* ---- 每秒统计 ---- */
+        if (g_sys_ms - last_print_ms >= 1000) {
+            last_print_ms = g_sys_ms;
+            printf("[1s] CH1 rx=%u tx=%u E=%u TO=%u | CH2 rx=%u tx=%u E=%u TO=%u | ISR=%u\r\n",
+                   (unsigned)sw1_rx_cnt, (unsigned)sw1_tx_cnt,
+                   (unsigned)sw1_edge_cnt, (unsigned)sw1_tx_timeout,
+                   (unsigned)sw2_rx_cnt, (unsigned)sw2_tx_cnt,
+                   (unsigned)sw2_edge_cnt, (unsigned)sw2_tx_timeout,
+                   (unsigned)sw_isr_count);
+        }
+    }
+}
+#endif
+
 /* ==================== 主入口 ==================== */
 int main(void)
 {
@@ -298,6 +366,8 @@ int main(void)
     test_pca9685();
 #elif defined(DIRECT_SERVO_SWEEP)
     test_sweep();
+#elif defined(SW_UART_ECHO_TEST)
+    test_sw_uart_echo();
 #else
     System_Run();
 #endif

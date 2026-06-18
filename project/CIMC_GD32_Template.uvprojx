@@ -544,6 +544,26 @@
               <FileType>5</FileType>
               <FilePath>..\App\inc\oledfont.h</FilePath>
             </File>
+            <File>
+              <FileName>step_motor.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\inc\step_motor.h</FilePath>
+            </File>
+            <File>
+              <FileName>step_motor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\src\step_motor.c</FilePath>
+            </File>
+            <File>
+              <FileName>sw_uart.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\App\src\sw_uart.c</FilePath>
+            </File>
+            <File>
+              <FileName>sw_uart.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\App\inc\sw_uart.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
