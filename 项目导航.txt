@@ -62,48 +62,27 @@
 └── 要制作的接线板引脚表_按模块.txt  实际使用的引脚分配表（按模块整理）
 
 ================================================================================
-三、当前代码状态（2026-06-18 最终）
+三、当前代码状态（2026-06-18）
 ================================================================================
 
-Git 最近提交（截至 2026-06-12）：
-  8fc42fd  电机驱动板更换 + 视觉模块接口 + PCA9685 OE使能 + 编译修复
-  051036b  电机PWM上电实测通过：修复PWM极性 + 适配大功率电机(20%限幅) + 串口上报频率优化(1Hz)
+  最新提交: 443ae78  SW UART双路全双工验证通过 + 引脚方案落地 + 文档全面更新
+  详见: 工作记录_2026-06-17.txt / 工作记录_2026-06-18.txt
 
-2026-06-17 未提交变更（工作记录 工作记录_2026-06-17.txt）：
-  机械臂校准重构:
-  - App/src/servo_arm.c   安装偏移校准 + 270°舵机适配 + 预设XY坐标 + 代码整理
-  - App/inc/servo_arm.h   移除 vision.h 依赖和 CollectTarget
-  - App/src/arm_ik.c      不限幅，几何不可达才返回-1
-  - App/src/arm_ik.h      限幅由 servo_arm 层负责
-  电机驱动修复:
-  - App/src/pwm_output.c  刹车无限循环修复 + 油门映射(启动突加)
-  - App/inc/pwm_output.h  PWM_MAX_DUTY改50%；新增 pwm_throttle_tick()
-  - User/main.c           恢复正常模式；新增 ServoArm_PrintStatus/HandlePresets
-  Bug修复:
-  - App/src/auto_nav.c    删除冗余 Laser_Init() 调用（双重初始化导致TOF丢帧）
-
-✅ 已测试通过：
-  - UART 调试串口 (CH340, PB5/PB13, 115200) — printf 重定向正常
-  - PS2 遥控器 — 16按键 + 双摇杆，模拟模式 0x73
-  - MPU6050 陀螺仪 — I2C 通信正常，芯片ID=0x68，校准完成
-  - TOF200F 激光测距 — UART3 PA0/PA1，Modbus 通信全流程通过
-  - 电机 PWM 驱动 — 双引脚H桥驱动板测试通过，启动突加+油门映射正常
-  - 舵机 PCA9685 — I2C + MODE2 推挽修复，6路舵机：安装偏移校准完成/270°舵机适配
-  - 舵机 PS2 遥控手动调节 + START预设XY坐标（IK解算+缓冲插值）
-  - 串口 1Hz 舵机状态上报（6路角度+脉宽μs）
-
-  软件 UART 双路全双工 (2026-06-18 新增并验证):
-  - App/src/sw_uart.c + App/inc/sw_uart.h
-  - TIMER1 @ 345.6kHz (3x 过采样), 115200 8N1
-  - CH1=PE2(J5-56)/PE5(J5-58), CH2=PF7(J4-17)/PF6(J4-19)
-  - 软件修复: RX 时序修正 + 上拉 + TX 超时诊断
-  - ✅ PC 回显测试通过，两路全双工稳定
+✅ 已验证通过：
+  - 调试串口 (UART4, CH340)    — printf 重定向正常
+  - PS2 遥控器                  — 16按键 + 双摇杆
+  - MPU6050 陀螺仪              — I2C, 芯片ID=0x68
+  - TOF200F 激光测距            — UART3, Modbus 通信
+  - 电机 PWM 驱动               — 双引脚 H 桥, 四路 GPIOC
+  - 舵机 PCA9685                — I2C, 6路校准 + IK + PS2 遥控
+  - 步进电机传送带              — PG3/PD4/PH6, TIMER6 2kHz
+  - SW UART 双路全双工          — PE2/PE5 + PF7/PF6, 115200, PC 回显通过
 
 ⏸ 待完成：
-  - 视觉模块 — vision.h/c 接口已预留，实现为空（占位），待另一个工程对接
-  - IK 几何常数 — 实测有效范围与理论有偏差，待重新测量标定
-  - 全系统联调 — 各模块独立测试完成后进行
-  - 正常模式集成 SW UART — 当前仅测试模式验证通过
+  - 视觉模块 — 接口预留, 待对接
+  - IK 标定 — 实测有效范围有偏差
+  - 全系统联调 — 各模块独立测试完成后
+  - SW UART 集成到正常模式 — 当前仅测试模式验证
 
 ================================================================================
 四、引脚分配（当前生效）
@@ -193,13 +172,9 @@ Git 最近提交（截至 2026-06-12）：
 6. 电机 PWM 双引脚 H 桥 + 油门分层控制
    - 四路 PWM 全部在 GPIOC: D0=PC2, D1=PC3, D2=PC5, D3=PC10
    - 软件 PWM 200Hz (TIMER4), 正向HIGH=有效
-   - 油门分层: target(用户) → motor_throttle_map() → internal(硬件)
-     映射: target=0→0%, target>0→10%~100%
-     启动: 静止→转动先给 70%×100ms 突加
-   - 方向切换自动插入 100ms 刹车保护 (BRAKE_CYCLES=5)
-   - pwm_throttle_tick() 每帧调用（50Hz），管理状态机+硬件输出
+   - 油门分层 + 启动突加 + 方向切换刹车保护
 
-6. 软件 UART (sw_uart)
+7. 软件 UART (sw_uart)
    - TIMER1 @ 345.6kHz (3x 过采样 = 115200 × 3)
    - 两路全双工，同一 ISR 处理收发状态机
    - RX: 下降沿检测 + 3 倍过采样 (start bit 中心验证)
@@ -208,9 +183,8 @@ Git 最近提交（截至 2026-06-12）：
    - printf 格式必须用 %u 而非 %lu (MicroLIB 兼容)
 
 7. GPIOD 端口限制
-   - GPIOD 不可用于 GPIO 输入 (仅输出和同板 MCU 自回环可用)
-   - 外接信号 → PD4 崩系统 / PD6 无数据
-   - 所有需要输入的引脚避开 GPIOD
+   - GPIOD 全端口不可用于 GPIO 输入 (仅输出可用)
+   - 所有输入引脚避开 GPIOD
 
 8. 编译注意事项
    - GD32H7 标准库没有 GPIO_OSPEED_2MHZ 宏（仅支持高速），使用 GPIO_OSPEED_60MHZ
@@ -222,11 +196,12 @@ Git 最近提交（截至 2026-06-12）：
 六、测试模式
 ================================================================================
 
-main.c 顶部有三个测试宏，同时只启用一个。当前默认全部注释 = 正常全系统模式。
+main.c 顶部有四个测试宏，同时只启用一个。全部注释 = 正常全系统模式。
 
-  //#define MOTOR_MODULE_TEST       四电机 PWM + PS2 遥控独立测试
-  //#define PCA9685_MODULE_TEST     舵机 PCA9685 + PS2 遥控独立测试
-  //#define DIRECT_SERVO_SWEEP     MCU 直驱舵机扫频测试 (PF9, 50Hz PWM)
+  //#define MOTOR_MODULE_TEST       四电机 PWM + PS2 遥控
+  //#define PCA9685_MODULE_TEST     舵机 PCA9685 + PS2 遥控
+  //#define DIRECT_SERVO_SWEEP     舵机扫频 (PF9, 50Hz PWM)
+  //#define SW_UART_ECHO_TEST       SW UART 两路 PC 回显测试
 
 MOTOR_MODULE_TEST:
   - PS2 ↑↓ 油门 +/-1%, □○ 油门 +/-5%, ←→ 差速, × 回正, △ 急停
@@ -238,7 +213,10 @@ PCA9685_MODULE_TEST:
 
 DIRECT_SERVO_SWEEP:
   - PF9 直驱 50Hz PWM 慢速扫频, PCA9685 ch8~ch14 固定角度参考
-  - 机械臂安装校准专用，舵机电源需外接
+
+SW_UART_ECHO_TEST:
+  - SW UART CH1(PE2/PE5) + CH2(PF7/PF6) PC 回显
+  - 每秒调试串口打印统计: rx/tx/edge/timeout/ISR
 
 ================================================================================
 七、编码风格与约定

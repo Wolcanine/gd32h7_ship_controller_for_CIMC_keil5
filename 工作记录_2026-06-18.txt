@@ -7,237 +7,119 @@ IDE:  Keil MDK5 (uVision5)
 一、步进电机传送带驱动 — 新增模块
 ======================================================================
 
-  【参考】STEP 工程 (D:\学习\电赛\2025\STEP)，使用相同的步进电机驱动板
+  新建文件: App/inc/step_motor.h, App/src/step_motor.c
+  参考: STEP 工程 (D:\学习\电赛\2025\STEP), 同款驱动板
 
-  【STEP 工程驱动分析】
-    - 接口: 3 线 (EN/DIR/STEP)，GPIO 比特位控制
-    - 脉冲: 定时器中断 → 置 DIR → STEP↑ → STEP↓
-    - 速度: 分频器 (speed_div) 控制步进频率
-    - 参数: 1.8° 全步, 1/16 微步 → 3200 步/圈
-    - TIM3 @ 500μs 驱动偏航轴, TIM4 @ 1ms 驱动俯仰轴
+  接口: 3 线 (EN/DIR/STEP), GPIO 比特位控制
+  引脚: PG3(J4-57)=STEP, PD4(J4-22)=DIR, PH6(J4-37)=EN
+  定时器: TIMER6 @ 500μs (2kHz)
+  参数: 1.8° 全步, 1/16 微步 → 3200 步/圈
 
-  【本工程实现】
-    - 新建 App/inc/step_motor.h — 驱动头文件
-    - 新建 App/src/step_motor.c — 驱动实现
-    - 修改 User/gd32h7xx_it.c — 添加 TIMER6_IRQHandler
-    - 修改 User/main.c — System_Run 中集成
-
-  【引脚分配】(均为 J4 空闲引脚)
-    PA2 (J4-21) → STEP  步进脉冲
-    PD4 (J4-22) → DIR   方向 (H=正转, L=反转)
-    PD6 (J4-23) → EN    使能 (H=使能)
-
-  【定时器】TIMER6 — 500μs (2kHz) 中断
-
-  【API】
+  API:
     Stepper_Init()              — GPIO + TIMER6 初始化
     Stepper_SetSpeed(dir, div)  — dir: 1/-1/0, div: 1(快)~200(慢)
-    Stepper_GetCurStep()        — 累计步数 (调试)
+    Stepper_GetCurStep()        — 累计步数
 
-  【EN 引脚逻辑】
-    - 初始化: EN=H (使能)
-    - 运行中: 始终保持 EN=H (与 STEP 工程一致)
-    - 停止时: 仅停止脉冲, EN 不变
+  PS2 控制: L1=正转(div=4), L2=反转(div=4)
+  集成: System_Run 主循环 + gd32h7xx_it.c TIMER6_IRQHandler
 
-======================================================================
-二、PS2 传送带控制 (手动测试)
-======================================================================
-
-  【按键绑定】(在 System_Run 主循环中)
-    L1 → 正转 (收垃圾), 500Hz 步进 (div=4)
-    L2 → 反转 (释放),   500Hz 步进 (div=4)
-    其他 → 停止
-
-  【1Hz 调试打印】
-    - 新增 "STEP: XXXXX steps" 行，显示累计步数
+  PA2/PD6 原为 STEP/EN 引脚, 已腾给预留串口 (后弃用, 见第三节)
 
 ======================================================================
-三、步进电机引脚搬迁（为 USART1 腾出 PA2/PD6）
+二、硬件串口扩展 — USART1 & UART6 (最终弃用)
 ======================================================================
 
-  【搬迁原因】PA2 AF7=USART1_TX, PD6 AF7=USART1_RX
+  新增 uart_driver 模块索引: UART_USART1=3, UART_UART6=4
+  新增 ISR: USART1_IRQHandler, UART6_IRQHandler (uart_driver.c)
+  运行时数组: [3]→[5]
 
-  【新引脚】
-    STEP: PA2(J4-21) → PG3(J4-57)
-    DIR:  PD4(J4-22)   不变
-    EN:   PD6(J4-23) → PH6(J4-37)
+  USART1: PA2(J4-21,AF7) + PD6(J4-23,AF7)
+    TX ✓, RX ✗ — PD6 RBNE 始终为 0 (含物理回环测试)
 
-  【AF 验证】(来源: 芯片AF映射表_新.txt)
-    PG3: AF2=TIMER7, AF3=TIMER31, AF4=SPI1, AF7=USBHS1_ULPI — 无 UART，安全
-    PH6: AF4=I2C1, AF5=SPI4, AF6=ETH1, AF7=TIMER41 — 无 UART，安全
+  UART6: PF7(J4-17,AF6) + PF6(J4-19,AF6)
+    上电仅发两个 0x00, 之后无输出
 
-======================================================================
-四、新增两路预留串口
-======================================================================
-
-  【USART1】PA2(TX,AF7) + PD6(RX,AF7)
-    - uart_driver.h: 新增 UART_USART1 = 3
-    - uart_driver.c: 新增 hw_cfg + USART1_IRQHandler
-    - 运行时数组 [3] → [5]
-
-  【UART6】PF7(TX,AF6) + PF6(RX,AF6)
-    - uart_driver.h: 新增 UART_UART6 = 4
-    - uart_driver.c: 新增 hw_cfg + UART6_IRQHandler
-    - ⚠ PF7 在另一工程用作 XPT2046 T_PEN(可选, 当前未启用)
-
-  【AF 验证】(来源: 芯片AF映射表_新.txt)
-    PF7 AF6 = UART6_TX, PF6 AF6 = UART6_RX
-    PA2 AF7 = USART1_TX, PD6 AF7 = USART1_RX
+  寄存器诊断: CTL/BAUD/CLK 均正确, 配置层面无误
+  结论: 管脚/板级问题 — 由 SW UART 替代, 见第四节
 
 ======================================================================
-五、接线板引脚表更新
+三、GPIOD 端口问题 — 确认
 ======================================================================
 
-  - 要制作的接线板引脚表，不是资料.txt
-    J4 已用: 13 → 18 引脚
-    总引出: 68 → 74 根
-    新增 GPIO 索引: PF6/PG3/PH6
-    更新 GPIO 索引: PA2/PD4/PD6/PF7
-
-======================================================================
-六、硬件串口测试（USART1 / UART6）— 失败
-======================================================================
-
-  【测试方法】
-    - 在 uart_driver 中新增 UART_USART1(PA2/PD6,AF7) 和 UART_UART6(PF7/PF6,AF6)
-    - 添加 USART1_IRQHandler / UART6_IRQHandler
-    - 编写 UART_ECHO_TEST 回环测试
-
-  【测试结果】
-    USART1 (PA2/PD6):
-      - TX ✓: PC 能收到 "USART1 OK" / "U1 heartbeat"
-      - RX ✗: PC 发送数据，MCU STAT 寄存器 RBNE 始终为 0
-      - PA2→PD6 杜邦线物理回环: rx 计数仍为 0
-      → 结论: PD6 管脚无法作为 USART RX
-
-    UART6 (PF7/PF6):
-      - TX ✗: 上电只发出两个 0x00，之后无输出
-      - RX ✗: PC 发送数据，MCU 无响应
-      → 结论: PF6/PF7 管脚 UART 功能在这块板上有底层问题
-
-  【寄存器诊断】
-    USART CTL0=0x2D (UEN=1,REN=1,TEN=1) ✓
-    GPIO CTL: PD6=AF, PF6=AF, PF7=AF ✓
-    BAUD: 1302 (150MHz/1302≈115200) ✓
-    CLK: APB1=150MHz ✓
-    配置层面一切正确，是管脚/板级层面的问题
-
-  【历史佐证】
-    laser.h 注释: "TOF200F 模块不可使用 PD6 作为 RX 引脚（已验证通信失败）"
-    与本次测试结论一致
-
-======================================================================
-七、软件 UART 实现 (sw_uart) — TX 通, RX 不通
-======================================================================
-
-  【方案】
-    - TIMER1 @ 3x 波特率 (345.6kHz) 驱动两路全双工状态机
-    - TX: 精确位定时，ISR 中移位输出
-    - RX: 下降沿检测 + 3 倍过采样
-    - 引脚: CH1=PA2(TX)+PD6(RX), CH2=PF7(TX)+PF6(RX)
-    - 纯 GPIO 读写，不依赖硬件 USART AF
-
-  【测试结果】
-    - TX ✓: PC 能收到 "SW UART1 OK" / "SW UART2 OK"
-    - RX ✗: 发送字符无回显，E(下降沿计数)=0
-    - ISR 正常运行 (sw_isr_count 快速增长)
-
-  【关键发现】
-    - PD6/PF6 作为 GPIO 输入，ISR 中采样 GPIOD_ISTAT/GPIOF_ISTAT
-    - 下降沿检测始终为 0 → CH340 TX 的电平变化未被 MCU 识别
-    - 与硬件串口测试结论一致: GPIOD/GPIOF 的输入功能在此板上有问题
-
-  【PIT 时钟陷阱】
-    pit_init 参数按 SystemCoreClock(600MHz) 折算，TIMER1 在 APB2(300MHz)
-    需传 2x 期望周期: period=1736 → 实际 868 → 345.6kHz
-
-======================================================================
-八、Keil 工程集成注意事项
-======================================================================
-
-  ⚠ 需要手动在 Keil MDK5 中添加以下文件:
-    1. App/inc/step_motor.h    → Header Files
-    2. App/src/step_motor.c    → Source Files
-    3. App/inc/sw_uart.h       → Header Files
-    4. App/src/sw_uart.c       → Source Files
-
-  ⚠ 步进电机驱动板需独立供电 (通常 12V~24V)
-
-======================================================================
-十、SW UART 软件修复 + 硬件调试记录 (2026-06-18 第二~五轮)
-======================================================================
-
-  【软件修复 (已完成并验证)】
-    P1 - RX 3x 过采样时序修正:
-      问题: 下降沿检测后只等 1 tick 就验证 start bit, D0采样在3tick
-            而 D0 中心在 4.5tick 处, 偏了半个 bit 周期
-      修复: state 1 中改等 2 ticks 再验证, D0采样在 4 tick 处
-            误差从 ±1.5 tick 缩小到 ±0.5 tick (±1/6 bit)
-      文件: App/src/sw_uart.c case 1: tick==1 → tick==2
-
-    P2 - RX 引脚内部上拉:
-      GPIO_PUPD_NONE → GPIO_PUPD_PULLUP (两路 RX 均加)
-      防止浮空引脚读不到 HIGH 导致边缘检测永不触发
-
-    P3 - TX 超时诊断:
-      新增 sw1_tx_timeout / sw2_tx_timeout
-      SendByte 忙等超时时递增, 1Hz 统计包含 TO= 字段
-
-    P4 - printf 格式统一 %u (避坑 MicroLIB %lu)
-
-  【修改文件】
-    App/inc/sw_uart.h    — 新增 timeout 计数器 extern; CH1 RX 引脚多次变更
-    App/src/sw_uart.c    — P1+P2+P3 修复; 注释更新
-    User/main.c          — 测试函数多次迭代 (回环→PC回显→心跳+回显)
-
-======================================================================
-十一、SW UART 硬件引脚最终方案 (2026-06-18 第六轮)
-======================================================================
-
-  【CH1 — GPIOE (PE2=TX, PE5=RX)】
-    PE2 (J5-56): 推挽输出, 空闲 HIGH
-    PE5 (J5-58): 上拉输入, GPIO_PUPD_PULLUP
-    同端口 RCU_GPIOE, 相邻 5mm, 无模块冲突
-    ✅ 回环测试通过, ✅ 外接 CH340 PC 回显测试通过
-
-  【CH2 — GPIOF (PF7=TX, PF6=RX)】
-    PF7 (J4-17): 推挽输出
-    PF6 (J4-19): 上拉输入
-    同端口 RCU_GPIOF, 相邻 5mm
-    ✅ 回环测试通过, ✅ 外接 CH340 PC 回显测试通过
-
-  【已弃用引脚】
-    PA2/PD6 — 原 CH1, PD6(GPIOD) 外部信号不通, 已释放
-    PE4/PE6 — 曾候选, 与摄像头 OV2640 DCI 冲突, 不用
-
-  【GPIOD 端口判决 (2026-06-18 确认)】
-    - PD6: 硬件 USART1 RX 不通 | SW UART 外接 CH340 → E=0
+  多个独立测试确认 GPIOD 不可用于 GPIO 输入:
+    - PD6: 硬件 USART1 RX 不通 | SW UART 外接 CH340 → edge=0
     - PD4: 外接 CH340 → 系统崩溃/调试串口卡死
-    - 输出正常 (步进电机 DIR=PD4 在用)
-    - 结论: GPIOD 全端口不可用于 GPIO 输入 (板级/硅片级问题)
-    - 历史佐证: laser.h "TOF200F 不可使用 PD6 作为 RX 引脚"
+    - 同板 MCU 自回环可用 (PA2 推挽强驱→PD6), 但外接信号失败
+    - 输出正常: PD4=步进 DIR 工作中
+    - 历史佐证: laser.h "TOF200F 不可使用 PD6 作为 RX"
 
-  【软件修复 (全部验证通过)】
-    P1 - RX 3x 过采样: state 1 tick==1→2, 采样点从 3tick→4tick
+  结论: GPIOD 全端口避开输入用途, 仅做输出或释放
+
+======================================================================
+四、SW UART 软件串口 — 最终方案
+======================================================================
+
+  新建文件: App/inc/sw_uart.h, App/src/sw_uart.c
+  方案: TIMER1 @ 345.6kHz (3x 过采样), 两路全双工, 115200 8N1
+  ISR: gd32h7xx_it.c TIMER1_IRQHandler → SwUart_ISR()
+
+  【最终引脚】
+    CH1: PE2(J5-56)=TX + PE5(J5-58)=RX  (GPIOE, 同端口相邻)
+    CH2: PF7(J4-17)=TX + PF6(J4-19)=RX  (GPIOF, 同端口相邻)
+
+  【软件修复 (入版)】
+    P1 - RX 时序: start bit 验证从 1tick→2tick, D0 采样从 3→4tick
     P2 - RX 上拉: GPIO_PUPD_NONE → GPIO_PUPD_PULLUP
-    P3 - TX 超时诊断: sw1/2_tx_timeout 计数器
-    P4 - printf 格式: %lu → %u (避坑 MicroLIB)
+    P3 - TX 诊断: sw1/2_tx_timeout 超时计数器
+    P4 - printf: %lu→%u (MicroLIB 兼容)
+
+  【PIT 时钟注意】
+    pit_init 按 SystemCoreClock(600MHz) 折算参数
+    TIMER1 在 APB2(300MHz), 需传 2x 期望周期: 1736→实际868→345.6kHz
+
+  【验证】PC 回显测试通过, 两路全双工稳定
+
+  【已弃用】
+    PA2(J4-21) + PD6(J4-23) — 原 CH1, PD6 不可用, 已释放
 
 ======================================================================
-十二、当前状态 & 下一步
+五、新增/修改文件清单
 ======================================================================
 
-  ✅ SW UART 两路全双工全部验证通过 (PC 回显 115200 8N1 稳定)
-  ✅ 软件修复: 时序/上拉/超时诊断
-  ✅ 引脚方案: CH1=PE2+PE5 / CH2=PF7+PF6
-  ✅ 步进电机: STEP=PG3, DIR=PD4, EN=PH6, TIMER6 2kHz
-  ✅ 硬件串口扩展: USART1(PA2/PD6), UART6(PF7/PF6) — RX 硬件不可用
-  ✅ 芯片 AF 映射完整表
-  ✅ 接线板引脚表双份同步
+  新增:
+    App/inc/step_motor.h      步进电机驱动头文件
+    App/src/step_motor.c      步进电机驱动实现
+    App/inc/sw_uart.h         软件 UART 头文件
+    App/src/sw_uart.c         软件 UART 实现
+    芯片AF映射表.txt          完整 AF 映射 (原有时序问题版本)
+    芯片AF映射表_新.txt       修正后 AF 映射表
 
-  ⏸ 待完成:
-    - 正常全系统模式集成 SW UART (当前仅测试模式验证)
-    - PA2/PD6 完全释放后的用途确定
-    - PF7/PF6 在硬件 UART6 和 SW UART2 之间二选一 (当前 SW UART2 占用)
+  修改:
+    User/main.c               SW_UART_ECHO_TEST + 步进集成
+    User/gd32h7xx_it.c        新增 TIMER1/TIMER6 IRQ
+    App/inc/uart_driver.h     新增 UART_USART1/UART_UART6 索引
+    App/src/uart_driver.c     新增 USART1/UART6 hw_cfg + ISR
+    项目导航.txt              引脚表/SW UART/GPIOD 限制更新
+    要制作的接线板引脚表_按模块，不是资料.txt
+    要制作的接线板引脚表，不是资料.txt
+
+  Keil 工程需手动添加:
+    App/inc/step_motor.h, App/src/step_motor.c
+    App/inc/sw_uart.h, App/src/sw_uart.c
+
+======================================================================
+六、当前状态
+======================================================================
+
+  ✅ SW UART 两路全双工, PC 回显验证通过
+  ✅ 步进电机驱动, PS2 控制
+  ✅ 硬件串口扩展 (USART1/UART6), RX 确认不可用后由 SW UART 替代
+  ✅ 引脚方案落地, 文档同步
+
+  ⏸ 正常全系统模式集成 SW UART (当前仅 SW_UART_ECHO_TEST 测试模式)
+  ⏸ PA2/PD6 释放后用途确定
+  ⏸ PF7/PF6 硬件 UART6 vs SW UART2 二选一
+
+  ⚠ GPIOD 全端口不可用于 GPIO 输入 — 全局约束
 
 ======================================================================
