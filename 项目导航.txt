@@ -16,6 +16,7 @@
             - TOF200F 激光测距
             - 四电机差分推进（双引脚 H 桥 PWM 驱动）
             - 6 舵机机械臂（PCA9685 I2C 驱动 + 逆运动学）
+            - GPS/北斗定位（ATGM336H-5N，SW UART CH1, 9600bps）
             - 视觉识别模块（接口预留，同板集成）
             - OLED 状态显示（SSD1306）
             - PID 航向闭环 / 自动导航
@@ -46,7 +47,8 @@
 │   ├── MyI2C.h                  软件 I2C 驱动（PE13/PE15）
 │   ├── gd32_driver_pwm.h        软件 PWM 引擎（200Hz, GPIOC）
 │   ├── gd32_driver_pit.h        硬件定时器驱动（50Hz 主循环 + 超时保护）
-│   ├── sw_uart.h                ★ 软件 UART 双路全双工（TIMER1, 345.6kHz）
+│   ├── sw_uart.h                ★ 软件 UART 双路全双工（TIMER1, 28.8kHz, 9600bps）
+│   ├── gps.h                    ★ GPS/北斗定位模块（ATGM336H-5N, SW UART CH1）
 │   └── step_motor.h             步进电机传送带驱动（TIMER6, 2kHz）
 │
 ├── App/src/                     ★ 应用层源文件（头文件的对应实现）
@@ -65,7 +67,7 @@
 三、当前代码状态（2026-06-18）
 ================================================================================
 
-  最新提交: 443ae78  SW UART双路全双工验证通过 + 引脚方案落地 + 文档全面更新
+  最新提交: 待提交  GPS模块集成 (ATGM336H-5N) + SW UART 9600bps适配
   详见: 工作记录_2026-06-17.txt / 工作记录_2026-06-18.txt
 
 ✅ 已验证通过：
@@ -76,13 +78,15 @@
   - 电机 PWM 驱动               — 双引脚 H 桥, 四路 GPIOC
   - 舵机 PCA9685                — I2C, 6路校准 + IK + PS2 遥控
   - 步进电机传送带              — PG3/PD4/PH6, TIMER6 2kHz
-  - SW UART 双路全双工          — PE2/PE5 + PF7/PF6, 115200, PC 回显通过
+  - SW UART 双路全双工          — PE2/PE5 + PF7/PF6, 9600, PC 回显通过
+
+⏸ 待验证：
+  - GPS/北斗模块                — ATGM336H-5N, SW UART CH1 @ 9600bps, 代码已完成
 
 ⏸ 待完成：
   - 视觉模块 — 接口预留, 待对接
   - IK 标定 — 实测有效范围有偏差
   - 全系统联调 — 各模块独立测试完成后
-  - SW UART 集成到正常模式 — 当前仅测试模式验证
 
 ================================================================================
 四、引脚分配（当前生效）
@@ -101,7 +105,7 @@
 
 【传感器】：
   TOF200F 激光:  UART3,  PA0-TX(J5-44) / PA1-RX(J5-43), 115200
-  调试串口:      UART4,  PB5-TX(J5-38) / PB13-RX(J5-36), 115200 → CH340 → USB
+  调试串口:      UART4,  PB5-TX(J5-38) / PB13-RX(J5-36), 9600 → CH340 → USB
   MPU6050:       I2C,    PE13-SCL / PE15-SDA (与 PCA9685 共享)
   OLED:          另一个项目控制，本项目不管理
 
@@ -116,9 +120,10 @@
   EN   = PH6 (J4-37)   使能 (H=使能)
   注: 原 PA2/PD6 已腾给预留串口, 后因 PD6(GPIOD) 输入不可用而弃用
 
-【SW UART 软件串口】两路全双工 (2026-06-18 新增)：
-  CH1: PE2-TX(J5-56) / PE5-RX(J5-58)  115200, GPIOE, TIMER1 @ 345.6kHz
-  CH2: PF7-TX(J4-17) / PF6-RX(J4-19)  115200, GPIOF, TIMER1 @ 345.6kHz
+【SW UART 软件串口】两路全双工 (2026-06-18 新增，2026-06-18 改 9600bps)：
+  CH1: PE2-TX(J5-56) / PE5-RX(J5-58)  9600, GPIOE, TIMER1 @ 28.8kHz 【GPS 占用】
+       GPS模块接线: VCC→5V, GND→GND, TX→PE5, RX→PE2, PPS→NC
+  CH2: PF7-TX(J4-17) / PF6-RX(J4-19)  9600, GPIOF, TIMER1 @ 28.8kHz 【预留】
 
 【预留硬件串口】(因 GPIOD/GPIOF RX 硬件不可用, 暂由 SW UART 替代)：
   USART1: PA2-TX(J4-21) / PD6-RX(J4-23)  — RX 不可用
@@ -175,8 +180,9 @@
    - 油门分层 + 启动突加 + 方向切换刹车保护
 
 7. 软件 UART (sw_uart)
-   - TIMER1 @ 345.6kHz (3x 过采样 = 115200 × 3)
+   - TIMER1 @ 28.8kHz (3x 过采样 = 9600 × 3)
    - 两路全双工，同一 ISR 处理收发状态机
+   - CH1 分配 GPS 模块 (ATGM336H-5N), CH2 预留
    - RX: 下降沿检测 + 3 倍过采样 (start bit 中心验证)
    - TX: 精确位定时，LSB first
    - 使用 GPIO_ISTAT 直读 + gpio_bit_set/reset 直写
@@ -196,12 +202,14 @@
 六、测试模式
 ================================================================================
 
-main.c 顶部有四个测试宏，同时只启用一个。全部注释 = 正常全系统模式。
+main.c 顶部有六个测试宏，同时只启用一个。全部注释 = 正常全系统模式。
 
   //#define MOTOR_MODULE_TEST       四电机 PWM + PS2 遥控
   //#define PCA9685_MODULE_TEST     舵机 PCA9685 + PS2 遥控
   //#define DIRECT_SERVO_SWEEP     舵机扫频 (PF9, 50Hz PWM)
-  //#define SW_UART_ECHO_TEST       SW UART 两路 PC 回显测试
+  //#define SW_UART_ECHO_TEST       SW UART 两路 PC 回显测试 (9600bps)
+  //#define GPS_MODULE_TEST         GPS 模块接收测试 (SW UART CH1, 9600bps)
+  //#define STEPPER_MODULE_TEST     步进电机传送带测试 (PS2 L1/L2)
 
 MOTOR_MODULE_TEST:
   - PS2 ↑↓ 油门 +/-1%, □○ 油门 +/-5%, ←→ 差速, × 回正, △ 急停
@@ -217,6 +225,17 @@ DIRECT_SERVO_SWEEP:
 SW_UART_ECHO_TEST:
   - SW UART CH1(PE2/PE5) + CH2(PF7/PF6) PC 回显
   - 每秒调试串口打印统计: rx/tx/edge/timeout/ISR
+
+GPS_MODULE_TEST:
+  - SW UART CH1 (PE2/PE5) 连接 ATGM336H-5N GPS 模块 @ 9600bps
+  - 每秒打印 NMEA 解析状态: 定位状态/UTC时间/经纬度/速度/航向/卫星数
+  - 模块板载 LED 闪烁 = 已定位，常亮/灭 = 未定位
+  - 冷启动首次定位需 30s~数分钟，需在开阔地/窗边测试
+
+STEPPER_MODULE_TEST:
+  - PS2 L1=正转(收垃圾), L2=反转(释放), 松手=停止
+  - 每秒打印累计步数
+  - 引脚: STEP=PG3 DIR=PD4 EN=PH6, TIMER6 @ 2kHz
 
 ================================================================================
 七、编码风格与约定

@@ -276,7 +276,7 @@ uint8_t ps2_key_pressed(uint8_t key)
  *             - 归一化油门/转向值 (-1.0 ~ +1.0)
  * 参数      none
  * 返回值    none
- * 备注      调用前需确保 uart_init(UART_DBG, 115200) 已完成
+ * 备注      调用前需确保 uart_init(UART_DBG, 9600) 已完成
  ******************************************************************************/
 void ps2_print_state(void)
 {

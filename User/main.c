@@ -7,6 +7,7 @@
  * 修改记录
  * 日期            作者            备注
  * 2026-06-17      CIMC           代码整理：提取System_Init，测试模式独立函数
+ * 2026-06-18      CIMC           串口机械臂角度指令: {a,b,c,d,e,f} → MoveToAngles
  ******************************************************************************/
 
 /* ==================== 模块测试开关 ==================== */
@@ -14,7 +15,11 @@
 //#define MOTOR_MODULE_TEST
 //#define PCA9685_MODULE_TEST
 //#define DIRECT_SERVO_SWEEP
-#define SW_UART_ECHO_TEST
+//#define SW_UART_ECHO_TEST
+//#define GPS_MODULE_TEST
+//#define STEPPER_MODULE_TEST
+#define ARM_TEACH_TEST
+//#define UART_DBG_ECHO_TEST
 
 #include "gd32h7xx.h"
 #include "systick.h"
@@ -33,6 +38,7 @@
 #include "servo_arm.h"
 #include "step_motor.h"
 #include "sw_uart.h"
+#include "gps.h"
 
 /* ==================== 全局变量 ==================== */
 volatile uint8_t  timer20ms_flag = 0;   /* 50Hz 周期标志, TIMER3 ISR 置位 */
@@ -51,14 +57,16 @@ static void System_Init(void)
 {
     SCB_EnableICache();
     SCB_EnableDCache();
-    uart_init(UART_DBG, 115200);
+    uart_init(UART_DBG, 9600);
     systick_config();
     printf("\r\n===== Boat Control System Starting =====\r\n");
 }
 
 /* ==================== 正常全系统模式 ==================== */
 #if !defined(MOTOR_MODULE_TEST) && !defined(PCA9685_MODULE_TEST) && \
-    !defined(DIRECT_SERVO_SWEEP) && !defined(SW_UART_ECHO_TEST)
+    !defined(DIRECT_SERVO_SWEEP) && !defined(SW_UART_ECHO_TEST) && \
+    !defined(GPS_MODULE_TEST) && !defined(STEPPER_MODULE_TEST) && \
+    !defined(ARM_TEACH_TEST) && !defined(UART_DBG_ECHO_TEST)
 static void System_Run(void)
 {
     /* ---- PS2 ---- */
@@ -97,6 +105,13 @@ static void System_Run(void)
     Stepper_Init();
     printf("[Stepper] OK (TIMER6 2kHz)\r\n");
 
+    /* ---- 软件串口 (两路 9600bps, TIMER1) ---- */
+    SwUart_Init();
+    printf("[SW UART] CH1+CH2 9600bps OK\r\n");
+
+    /* ---- GPS 模块 (SW UART CH1) ---- */
+    GPS_Init();
+
     /* ---- 50Hz 控制定时器 ---- */
     pit_ms_init(PIT_TIMER3, 20);
     printf("[TIMER3] 50Hz started\r\n");
@@ -127,13 +142,16 @@ static void System_Run(void)
         ps2_read_data();
         MPU6050_Update();
         Laser_GetDistanceCm();
+        GPS_Process();
 
         /* 机械臂 */
         ServoArm_RemoteControl();
         ServoArm_HandlePresets();
+        ServoArm_ProcessSerialCommand();   /* 串口角度指令 {a,b,c,d,e,f} */
         ServoArm_SmoothUpdate();
 
-        /* 传送带 (步进电机): PS2 L1=收垃圾(正转), L2=释放(反转), 否则停止 */
+        /* 传送带 (步进电机): PS2 L1=收垃圾(正转), L2=释放(反转), 否则停止
+         * ⚠ L1/L2 与机械臂腕旋转(ch4)共用，同时按键会联动 */
         if (PS2_Data.l1) {
             Stepper_SetSpeed(1, 4);     /* 正转, 500Hz 步进 */
         } else if (PS2_Data.l2) {
@@ -154,11 +172,12 @@ static void System_Run(void)
                    (long)MPU6050_GetAccelZ_mg(),
                    (unsigned)Laser_GetDistanceCm(), (unsigned)ps2_get_mode());
             ServoArm_PrintStatus();
+            GPS_PrintStatus();
             printf("STEP: %ld steps\r\n", (long)Stepper_GetCurStep());
         }
     }
 }
-#endif /* !MOTOR_MODULE_TEST && !PCA9685_MODULE_TEST && !DIRECT_SERVO_SWEEP && !SW_UART_ECHO_TEST */
+#endif /* !MOTOR_MODULE_TEST && ... && !UART_DBG_ECHO_TEST */
 
 /* ==================== 电机模块测试 ==================== */
 #ifdef MOTOR_MODULE_TEST
@@ -251,6 +270,56 @@ static void test_pca9685(void)
 }
 #endif
 
+/* ==================== 机械臂示教测试 ==================== */
+#ifdef ARM_TEACH_TEST
+static void test_arm_teach(void)
+{
+    uint32_t last_print_ms = 0;
+
+    printf("\r\n===== Arm Teach Mode =====\r\n");
+    printf("Modules: PS2 + PCA9685 + 50Hz timer ONLY\r\n");
+
+    ServoArm_SetSmoothSpeed(1);     /* 步进 1°/帧 */
+    ServoArm_SetSmoothDivider(2);   /* 分频 2 → 25°/s */
+
+    /* 仅初始化机械臂依赖的模块 */
+    ps2_init();
+    printf("[PS2] OK\r\n");
+
+    ServoArm_Init();         /* 内部调用 MyI2C_Init + pca9685_init + 默认归位 */
+    printf("[ServoArm] OK\r\n");
+
+    pit_ms_init(PIT_TIMER3, 20);
+    printf("[TIMER3] 50Hz started\r\n");
+
+    printf("\r\n===== Ready =====\r\n");
+    printf("LT/RT=Base  UP/DN=Shld  SQ/CI=Elbw  TRI/X=WrstP\r\n");
+    printf("L1/L2=WrstR  R1/R2=Grip  START=Capture  SELECT=PARK\r\n");
+    printf("SERIAL: send { a,b,c,d,e,f } to move arm\r\n\r\n");
+
+    while (1)
+    {
+        while (!timer20ms_flag) __WFI();
+        timer20ms_flag = 0;
+
+        /* 读取遥控器 */
+        ps2_read_data();
+
+        /* 机械臂控制 */
+        ServoArm_RemoteControl();
+        ServoArm_HandlePresets();
+        ServoArm_ProcessSerialCommand();   /* 串口角度指令 {a,b,c,d,e,f} */
+        ServoArm_SmoothUpdate();
+
+        /* 每秒打印状态 — 调试时取消注释 */
+        //if (g_sys_ms - last_print_ms >= 1000) {
+        //    last_print_ms = g_sys_ms;
+        //    ServoArm_PrintStatus();
+        //}
+    }
+}
+#endif
+
 /* ==================== 舵机扫频测试 ==================== */
 #ifdef DIRECT_SERVO_SWEEP
 static void test_sweep(void)
@@ -307,6 +376,118 @@ static void test_sweep(void)
 }
 #endif
 
+/* ==================== 步进电机传送带测试 ==================== */
+#ifdef STEPPER_MODULE_TEST
+static void test_stepper(void)
+{
+    uint32_t last_print_ms = 0;
+
+    printf("\r\n===== Stepper Motor Test (Conveyor Belt) =====\r\n");
+    printf("Pins: STEP=PG3 DIR=PD4 EN=PH6  TIMER6 @ 2kHz\r\n");
+
+    ps2_init();
+    printf("[PS2] OK\r\n");
+
+    Stepper_Init();
+    printf("[Stepper] OK\r\n");
+
+    pit_ms_init(PIT_TIMER3, 20);
+    printf("[TIMER3] 50Hz started\r\n");
+
+    printf("PS2: L1=正转(收垃圾) L2=反转(释放) 松手=停止\r\n");
+    printf("     speed_div=4 (500Hz 步进)\r\n\r\n");
+
+    while (1)
+    {
+        while (!timer20ms_flag) __WFI();
+        timer20ms_flag = 0;
+
+        ps2_read_data();
+
+        /* PS2 控制步进电机 */
+        if (PS2_Data.l1) {
+            Stepper_SetSpeed(1, 4);      /* 正转 */
+        } else if (PS2_Data.l2) {
+            Stepper_SetSpeed(-1, 4);     /* 反转 */
+        } else {
+            Stepper_SetSpeed(0, 0);      /* 停止 */
+        }
+
+        /* 每秒打印步数 */
+        if (g_sys_ms - last_print_ms >= 1000) {
+            last_print_ms = g_sys_ms;
+            printf("STEP: %ld steps | L1=%u L2=%u\r\n",
+                   (long)Stepper_GetCurStep(),
+                   (unsigned)PS2_Data.l1, (unsigned)PS2_Data.l2);
+        }
+    }
+}
+#endif
+
+/* ==================== GPS 模块测试 ==================== */
+#ifdef GPS_MODULE_TEST
+static void test_gps(void)
+{
+    uint32_t last_print_ms = 0;
+
+    printf("\r\n===== GPS Module Test (ATGM336H-5N) =====\r\n");
+    printf("SW UART CH1: PE2/PE5 @ 9600bps\r\n");
+
+    SwUart_Init();
+    printf("SwUart_Init OK, ISR=%u\r\n", (unsigned)sw_isr_count);
+
+    GPS_Init();
+    printf("Waiting for GPS fix (may take 30s~several min)...\r\n");
+    printf("LED on GPS module blinks = fix OK.\r\n\r\n");
+
+    while (1)
+    {
+        /* 处理 GPS 接收数据 */
+        GPS_Process();
+
+        /* 每秒打印状态 */
+        if (g_sys_ms - last_print_ms >= 1000) {
+            last_print_ms = g_sys_ms;
+            GPS_PrintStatus();
+            printf("  [SW ISR=%u E1=%u E2=%u]\r\n",
+                   (unsigned)sw_isr_count,
+                   (unsigned)sw1_edge_cnt, (unsigned)sw2_edge_cnt);
+        }
+    }
+}
+#endif
+
+/* ==================== 调试串口回显测试 (UART_DBG RX验证) ==================== */
+#ifdef UART_DBG_ECHO_TEST
+static void test_uart_dbg_echo(void)
+{
+    uint32_t rx_cnt = 0, tx_cnt = 0;
+    uint32_t last_print_ms = 0;
+    uint8_t  byte;
+
+    printf("\r\n===== UART_DBG (UART4) Echo Test =====\r\n");
+    printf("Port: PB5-TX / PB13-RX @ 9600 → CH340 → USB\r\n");
+    printf("Type anything, MCU prints RX char + hex.\r\n\r\n");
+
+    while (1)
+    {
+        /* 收到一个字节 → 打印一行明确消息 */
+        if (uart_query_byte(UART_DBG, &byte)) {
+            rx_cnt++;
+            printf("RX[%u]: '%c' (0x%02X)\r\n",
+                   (unsigned)rx_cnt, (char)byte, (unsigned)byte);
+            tx_cnt++;
+        }
+
+        /* 每秒心跳 */
+        if (g_sys_ms - last_print_ms >= 1000) {
+            last_print_ms = g_sys_ms;
+            printf("[1s] alive rx=%u\r\n", (unsigned)rx_cnt);
+        }
+    }
+}
+#endif
+
 /* ==================== 软串口 PC 回显测试 ==================== */
 #ifdef SW_UART_ECHO_TEST
 static void test_sw_uart_echo(void)
@@ -318,7 +499,7 @@ static void test_sw_uart_echo(void)
 
     /* 全部 printf 在 SwUart_Init 之前, 确保能看到 */
     printf("\r\n===== SW UART Echo to PC =====\r\n");
-    printf("CH1: PE2/PE5  CH2: PF7/PF6  115200\r\n");
+    printf("CH1: PE2/PE5  CH2: PF7/PF6  9600\r\n");
 
     printf("Calling SwUart_Init...\r\n");
     SwUart_Init();
@@ -364,10 +545,18 @@ int main(void)
     test_motor();
 #elif defined(PCA9685_MODULE_TEST)
     test_pca9685();
+#elif defined(ARM_TEACH_TEST)
+    test_arm_teach();
+#elif defined(UART_DBG_ECHO_TEST)
+    test_uart_dbg_echo();
 #elif defined(DIRECT_SERVO_SWEEP)
     test_sweep();
 #elif defined(SW_UART_ECHO_TEST)
     test_sw_uart_echo();
+#elif defined(GPS_MODULE_TEST)
+    test_gps();
+#elif defined(STEPPER_MODULE_TEST)
+    test_stepper();
 #else
     System_Run();
 #endif
