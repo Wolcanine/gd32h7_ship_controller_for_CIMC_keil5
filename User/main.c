@@ -18,7 +18,8 @@
 //#define SW_UART_ECHO_TEST
 //#define GPS_MODULE_TEST
 //#define STEPPER_MODULE_TEST
-#define ARM_TEACH_TEST
+//#define ARM_TEACH_TEST
+#define GPS_MODULE_TEST
 //#define UART_DBG_ECHO_TEST
 
 #include "gd32h7xx.h"

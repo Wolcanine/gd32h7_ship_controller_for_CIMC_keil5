@@ -49,11 +49,17 @@ typedef enum {
 void ServoArm_Init(void);                                 /* 初始化 PCA9685, 归默认位置   */
 void ServoArm_SetAngle(uint8_t ch, float angle);          /* 单关节角度输出 (含偏移补偿)   */
 void ServoArm_SetAction(ArmAction action);                /* 执行预设动作 (缓冲插值)       */
-void ServoArm_RemoteControl(void);                        /* PS2 手动调关节 (~2.5°/s)     */
-void ServoArm_HandlePresets(void);                        /* PS2 START/SELECT 预设 XY     */
-void ServoArm_MoveToXY(float x, float y);                 /* IK 解算 → 缓冲移动到目标 XY  */
+void ServoArm_RemoteControl(void);                        /* PS2 手动调关节, 速度可调     */
+void ServoArm_HandlePresets(void);                        /* [暂禁用] PS2 START/SELECT    */
+void ServoArm_MoveToXY(float x, float y);                 /* [暂禁用] IK 解算 → 缓冲移动  */
 void ServoArm_SmoothUpdate(void);                         /* 缓冲插值推进 (50Hz 调用)     */
 void ServoArm_CancelMove(void);                           /* 取消缓冲移动                 */
 void ServoArm_PrintStatus(void);                          /* 串口打印 6 路角度 + 脉宽     */
+void ServoArm_SetSpeed(uint8_t divider);                  /* 设置遥控速度: 1(50°/s)~50(1°/s) */
+void ServoArm_SetSmoothSpeed(uint8_t deg_per_frame);      /* 步进步长: 1~10°/帧                   */
+void ServoArm_SetSmoothDivider(uint8_t div);              /* 缓冲分频: 1=50Hz, 2=25Hz... 越大越慢   */
+void ServoArm_CapturePosition(uint8_t slot);              /* 捕获当前姿态到串口 (示教用)   */
+void ServoArm_MoveToAngles(const uint16_t angles[6]);      /* 设置6关节目标角度 → 缓冲移动   */
+void ServoArm_ProcessSerialCommand(void);                  /* 检查串口(UART_DBG)角度指令     */
 
 #endif

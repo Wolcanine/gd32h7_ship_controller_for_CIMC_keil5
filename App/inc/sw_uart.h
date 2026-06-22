@@ -1,7 +1,7 @@
 /*******************************************************************************
  * 文件名          sw_uart.h
- * 描述            软件 UART (bit-bang) — 两路全双工 @ 115200bps
- *                 使用 TIMER1 @ 3x 波特率 (345.6kHz) 驱动收发状态机
+ * 描述            软件 UART (bit-bang) — 两路全双工 @ 9600bps
+ *                 使用 TIMER1 @ 3x 波特率 (28.8kHz) 驱动收发状态机
  *                 RX 下降沿检测 + 3倍过采样，TX 精确位定时
  * MCU             GD32H759IMK6
  * IDE             Keil MDK5 (uVision5)
@@ -13,6 +13,8 @@
  * 修改记录
  * 日期            作者            备注
  * 2026-06-18      CIMC           初始版本，替代故障硬件串口
+ * 2026-06-18      CIMC           波特率降至9600，适配GPS模块(ATGM336H-5N)
+ *                                CH1 分配给GPS: PE2-TX / PE5-RX
  ******************************************************************************/
 
 #ifndef __SW_UART_H
@@ -21,14 +23,14 @@
 #include "gd32h7xx.h"
 
 /* ==================== 波特率 ==================== */
-#define SW_UART_BAUD        115200
+#define SW_UART_BAUD        9600
 
-/* ==================== 通道 1 引脚 ==================== */
+/* ==================== 通道 1 引脚 (GPS 模块) ==================== */
 #define SW1_TX_PORT         GPIOE
-#define SW1_TX_PIN          GPIO_PIN_2      /* PE2  J5-56 (GPIOE, 空闲) */
+#define SW1_TX_PIN          GPIO_PIN_2      /* PE2  J5-56 → GPS模块 RX (配置用) */
 #define SW1_TX_RCU          RCU_GPIOE
 #define SW1_RX_PORT         GPIOE
-#define SW1_RX_PIN          GPIO_PIN_5      /* PE5  J5-58 (GPIOE, 空闲) */
+#define SW1_RX_PIN          GPIO_PIN_5      /* PE5  J5-58 ← GPS模块 TX (NMEA数据) */
 #define SW1_RX_RCU          RCU_GPIOE
 
 /* ==================== 通道 2 引脚 ==================== */

@@ -1,6 +1,6 @@
 接线板引脚总表
 项目: 水面垃圾收集船 — GD32H759IMK6 统一接线板
-日期: 2026-06-12
+日期: 2026-06-18
 说明: 包含本工程(船控) + 另一工程(摄像头+LCD+SDRAM)所有需引出引脚
       ★ 标记 = 两工程共用冲突引脚，需协调解决
       已释放 = 可自由重新分配
@@ -25,8 +25,8 @@ J5-44   PA0     UART3_TX (TOF激光)     本工程★     TOF200F @115200 (AF8)
                                                另一工程: UART3 @921600 ← 冲突!
 
 ──────────────────────────────────────────────────────────────
-J5-56   PE2     SW UART1 TX            本工程      GPIOE, ★PC回显验证通过 (板载 LED1 复用)
-J5-58   PE5     SW UART1 RX            本工程      GPIOE, ★PC回显验证通过 (板载 LED2 复用)
+J5-56   PE2     SW UART1 TX (GPS)      本工程      GPIOE, GPS ATGM336H-5N @9600 (板载 LED1 复用)
+J5-58   PE5     SW UART1 RX (GPS)      本工程      GPIOE, GPS ATGM336H-5N @9600 (板载 LED2 复用)
 
 ──────────────────────────────────────────────────────────────
 J5 已用: 10 个引脚
@@ -38,11 +38,11 @@ J5 已用: 10 个引脚
 
 J4-Pin  引脚    功能                    所属工程    备注
 ──────────────────────────────────────────────────────────────
-J4-17   PF7  ⚠  SW UART2 TX            本工程      GPIOF, 另一工程 XPT2046 T_PEN(可选,未启用)
-J4-19   PF6     SW UART2 RX            本工程      GPIOF, ★PC回显验证通过
+J4-17   PF7  ⚠  SW UART2 TX            本工程      GPIOF, 预留 @9600, 另一工程 XPT2046 T_PEN(可选,未启用)
+J4-19   PF6     SW UART2 RX            本工程      GPIOF, 预留 @9600, ★PC回显验证通过
 J4-21   PA2     已释放                  本工程      原 USART1_TX (PD6输入不可用, 已弃用)
 J4-22   PD4     步进 DIR               本工程      步进电机方向 (H=正转, GPIOD输出正常)
-J4-23   PD6     已释放                  本工程      GPIOD输入不可用, 原 USART1_RX/SW UART1 RX
+J4-23   PD6     已释放                  本工程      GPIOD输入不可用, 原 USART1_RX / SW UART1 RX
 J4-31   PB10    PS2 CLK                本工程      PS2 手柄
 J4-32   PC2     左电机 D0 (PWM)        本工程      软件 PWM @200Hz
 J4-33   PC3     左电机 D1 (PWM)        本工程      软件 PWM @200Hz
@@ -186,17 +186,17 @@ SDRAM: ~35 个引脚 (板载直连，不引出)
 ──────────────────────────────────────────────────────────────
 PF10    触摸 T_CS                (另一工程 XPT2046, 已引出到 J4-43)
 PA6     EVAL LED2               板载LED
-PE2     SW UART1 TX             ★已引出到 J5-56 (替代板载 LED1)
-PE5     SW UART1 RX             ★已引出到 J5-58 (替代板载 LED2)
+PE2     SW UART1 TX (GPS)       ★已引出到 J5-56 (ATGM336H-5N @9600, 替代板载 LED1)
+PE5     SW UART1 RX (GPS)       ★已引出到 J5-58 (ATGM336H-5N @9600, 替代板载 LED2)
 PH7     LED3 (自定义)           板载LED
 PF8     USER_KEY                板载用户按键
 PA9     EVAL_COM_TX             板载串口 (未使用)
 PA10    EVAL_COM_RX             板载串口 (未使用)
 
 ──────────────────────────────────────────────────────────────
-板载: 6 个引脚 (PE2/PE5 已引出为 SW UART1)
+板载: 6 个引脚 (PE2/PE5 已引出为 SW UART1 GPS @9600)
 
-PF10 已移至触摸屏引出, PE2/PE5 已引出为 SW UART1
+PF10 已移至触摸屏引出, PE2/PE5 已引出为 SW UART1 (GPS ATGM336H-5N)
 
 
 ======================================================================
@@ -225,8 +225,9 @@ PF10 已移至触摸屏引出, PE2/PE5 已引出为 SW UART1
     在本工程代码中已释放，但另一工程的触摸屏模块正在使用他们，
     所以接线板上不能标"已释放"——需接给 XPT2046 触摸屏。
 
-  已释放可复用: PA2(J4-21) PD6(J4-23) PF7(J4-17)  (原硬件UART引脚)
+  已释放可复用: PA2(J4-21) PD6(J4-23)  (原硬件UART引脚)
     ⚠ GPIOD端口不可用于GPIO输入  PD6=原RX不可用  PD4=步进DIR(输出正常)
+    ⚠ PF7(J4-17) 非空闲 — 已被 SW UART2 TX 占用 (@9600)
 
 ======================================================================
 十一、按 GPIO 端口排序的完整引脚索引
@@ -281,7 +282,7 @@ PF10 已移至触摸屏引出, PE2/PE5 已引出为 SW UART1
   PD3   —      LCD D10                      另一工程
   PD4   J4-22  步进 DIR                      本工程 (传送带)
   PD5   —      LCD WR                       另一工程
-  PD6   J4-23  USART1_RX                     本工程 (预留串口1)
+  PD6   J4-23  已释放 (GPIOD输入不可用)     本工程 (原USART1_RX)
   PD7   —      LCD CS                       另一工程
   PD8   —      SDRAM                        板载不引出
   PD9   —      SDRAM                        板载不引出
@@ -294,23 +295,19 @@ PF10 已移至触摸屏引出, PE2/PE5 已引出为 SW UART1
 
   PE0   —      SDRAM                        板载不引出
   PE1   —      SDRAM                        板载不引出
-  PE2   J5-56  SW UART1 TX                   本工程 (★已验证, 原板载LED1)
+  PE2   J5-56  SW UART1 TX (GPS)              本工程 (★已验证, ATGM336H-5N @9600)
   PE3   —      摄像头 PCLK                  另一工程
-  PE5   J5-58  SW UART1 RX                   本工程 (★已验证, 原板载LED2)
   PE4   —      摄像头 D4                    另一工程
+  PE5   J5-58  SW UART1 RX (GPS)              本工程 (★已验证, ATGM336H-5N @9600)
   PE6   —      摄像头 D7                    另一工程
   PE7   —      SDRAM                        板载不引出
   PE8   —      SDRAM                        板载不引出
   PE9   —      SDRAM                        板载不引出
   PE10  —      SDRAM                        板载不引出
-  PE2   J5-56  SW UART1 TX                   本工程 (★已验证, 原板载LED1)
   PE11  —      SDRAM                        板载不引出
-  PE2   J5-56  SW UART1 TX                   本工程 (★已验证, 原板载LED1)
   PE12  —      SDRAM                        板载不引出
-  PE2   J5-56  SW UART1 TX                   本工程 (★已验证, 原板载LED1)
   PE13  J5-33  I2C SCL                      本工程
   PE14  —      SDRAM                        板载不引出
-  PE2   J5-56  SW UART1 TX                   本工程 (★已验证, 原板载LED1)
   PE15  J5-31  I2C SDA                      本工程
 
   PF0   —      SDRAM                        板载不引出
@@ -319,8 +316,8 @@ PF10 已移至触摸屏引出, PE2/PE5 已引出为 SW UART1
   PF3   —      SDRAM                        板载不引出
   PF4   —      SDRAM                        板载不引出
   PF5   —      SDRAM                        板载不引出
-  PF6   J4-19  SW UART2 RX                   本工程 (★已验证)
-  PF7   J4-17  UART6_TX ⚠                   本工程 (预留串口2, 另一工程 XPT2046 T_PEN 可选)
+  PF6   J4-19  SW UART2 RX                   本工程 (★已验证, @9600)
+  PF7   J4-17  SW UART2 TX ⚠                 本工程 (预留 @9600, 另一工程 XPT2046 T_PEN 可选)
   PF9   J4-41  触摸 T_DIN (MOSI)            另一工程 (XPT2046)
   PF10  J4-43  触摸 T_CS                    另一工程 (XPT2046)
   PF11  —      SDRAM                        板载不引出

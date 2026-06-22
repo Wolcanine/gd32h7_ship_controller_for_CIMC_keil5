@@ -78,9 +78,11 @@ void Stepper_Init(void)
 //---------------------------------------------------------------------------------------------------------------------
 void Stepper_SetSpeed(int8_t dir, uint32_t speed_div)
 {
+    int8_t norm_dir;
+
     if (dir == 0 || speed_div == 0)
     {
-        /* 停止：方向置零，ISR 不产生脉冲，EN 保持高电平使能 (与 STEP 工程一致) */
+        /* 停止：方向置零，ISR 不产生脉冲 */
         g_dir = 0;
         return;
     }
@@ -91,9 +93,15 @@ void Stepper_SetSpeed(int8_t dir, uint32_t speed_div)
     if (speed_div > STEPPER_MAX_SPEED_DIV)
         speed_div = STEPPER_MAX_SPEED_DIV;
 
-    g_dir       = (dir > 0) ? 1 : -1;
+    norm_dir = (dir > 0) ? 1 : -1;
+
+    /* 参数未变 → 不重置计数器，保持脉冲序列连续 */
+    if (g_dir == norm_dir && g_speed_div == speed_div)
+        return;
+
+    g_dir       = norm_dir;
     g_speed_div = speed_div;
-    g_speed_cnt = 0;  /* 立即重置计数，使速度变更即时生效 */
+    g_speed_cnt = 0;  /* 仅在参数变化时重置，使速度变更即时生效 */
 
     /* 设置方向引脚 */
     if (g_dir > 0)

@@ -1,7 +1,8 @@
 /*******************************************************************************
  * 文件名          sw_uart.c
  * 描述            软件 UART 实现 — 两路全双工
- *                 TIMER1 @ 3x 波特率 = 345.6kHz, 每tick处理两路TX+RX状态机
+ *                 TIMER1 @ 3x 波特率 = 28.8kHz, 每tick处理两路TX+RX状态机
+ *                 CH1: GPS模块, CH2: 预留
  * MCU             GD32H759IMK6
  * IDE             Keil MDK5 (uVision5)
  *
@@ -9,6 +10,8 @@
  * 日期            作者            备注
  * 2026-06-18      CIMC           初始版本
  * 2026-06-18      CIMC           修复: RX时序+上拉+超时诊断; CH1 RX PD6→PA3
+ * 2026-06-18      CIMC           波特率降至9600 (适配GPS模块):
+ *                                  TIMER1@28.8kHz, period=10417, pit_init=20834
  ******************************************************************************/
 
 #include "sw_uart.h"
@@ -23,9 +26,10 @@ volatile uint32_t sw2_tx_timeout   = 0;  /* CH2 TX 超时丢字节次数 */
 
 /* ==================== 内部常量 ==================== */
 /* TIMER1 在 APB2 (300MHz), pit_init 按 SystemCoreClock(600MHz) 折算,
- * 所以 period 参数需 ×2 补偿: 300M/345600Hz = 868 → 参数传 1736 */
+ * 所以 period 参数需 ×2 补偿.
+ * 9600×3=28800Hz, 300M/28800=10417, → pit_init传20834 */
 #define SW_TIMER_TICKS_PER_BIT  3
-#define SW_TIMER_PERIOD         1736    /* → 300MHz/868 ≈ 345.6kHz */
+#define SW_TIMER_PERIOD         20834   /* → 300MHz/10417 ≈ 28.8kHz */
 
 /* ==================== 通道1 数据结构 ==================== */
 static struct {

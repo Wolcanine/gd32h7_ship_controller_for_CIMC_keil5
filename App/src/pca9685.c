@@ -79,6 +79,9 @@ static uint8_t read_reg(uint8_t dev_addr, uint8_t reg)
 
 void pca9685_init(uint8_t addr)
 {
+    /* ---- 确保 I2C 总线已初始化 (GPIO 时钟 + 开漏配置) ---- */
+    MyI2C_Init();
+
     /* ---- OE 引脚：推挽输出，初始拉低使能 ---- */
     rcu_periph_clock_enable(PCA9685_OE_RCU);
     gpio_mode_set(PCA9685_OE_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, PCA9685_OE_PIN);
