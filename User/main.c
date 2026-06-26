@@ -8,6 +8,7 @@
  * 日期            作者            备注
  * 2026-06-17      CIMC           代码整理：提取System_Init，测试模式独立函数
  * 2026-06-18      CIMC           串口机械臂角度指令: {a,b,c,d,e,f} → MoveToAngles
+ * 2026-06-26      CIMC           新增 GYRO_PCA9685_TEST — 陀螺仪+PCA9685 组合测试
  ******************************************************************************/
 
 /* ==================== 模块测试开关 ==================== */
@@ -18,8 +19,9 @@
 //#define SW_UART_ECHO_TEST
 //#define GPS_MODULE_TEST
 //#define STEPPER_MODULE_TEST
-//#define ARM_TEACH_TEST
-#define GPS_MODULE_TEST
+#define ARM_TEACH_TEST
+//#define GYRO_PCA9685_TEST
+//#define GPS_MODULE_TEST
 //#define UART_DBG_ECHO_TEST
 
 #include "gd32h7xx.h"
@@ -67,7 +69,8 @@ static void System_Init(void)
 #if !defined(MOTOR_MODULE_TEST) && !defined(PCA9685_MODULE_TEST) && \
     !defined(DIRECT_SERVO_SWEEP) && !defined(SW_UART_ECHO_TEST) && \
     !defined(GPS_MODULE_TEST) && !defined(STEPPER_MODULE_TEST) && \
-    !defined(ARM_TEACH_TEST) && !defined(UART_DBG_ECHO_TEST)
+    !defined(ARM_TEACH_TEST) && !defined(UART_DBG_ECHO_TEST) && \
+    !defined(GYRO_PCA9685_TEST)
 static void System_Run(void)
 {
     /* ---- PS2 ---- */
@@ -271,6 +274,122 @@ static void test_pca9685(void)
 }
 #endif
 
+/* ==================== 陀螺仪 + PCA9685 组合测试 ==================== */
+#ifdef GYRO_PCA9685_TEST
+static void test_gyro_pca9685(void)
+{
+    #define PCA_MIN  102
+    #define PCA_MAX  512
+    uint32_t last_print_ms = 0;
+    uint8_t  sweep_dir = 1;
+    float    sweep_angle = 0.0f;
+    uint16_t sweep_frame = 0;
+
+    printf("\r\n===============================================\r\n");
+    printf("  MPU6050 Gyro + PCA9685 Combined Test\r\n");
+    printf("  I2C Bus: PE13(SCL) / PE15(SDA) shared\r\n");
+    printf("===============================================\r\n\r\n");
+
+    /* ---- 1. I2C 总线初始化 (PE13/PE15, 开漏) ---- */
+    MyI2C_Init();
+    printf("[I2C] PE13/PE15 OK\r\n");
+
+    /* ---- 2. MPU6050 初始化 (WHO_AM_I + 校准) ---- */
+    if (MPU6050_Init() != MPU6050_OK) {
+        printf("[MPU6050] *** FAILED — check wiring! ***\r\n");
+        printf("  VCC→3.3V  GND→GND  SCL→PE13  SDA→PE15  AD0→GND\r\n");
+        /* 不阻塞，继续测试 PCA9685 */
+    } else {
+        printf("[MPU6050] Init OK (ID=0x68, calibrated)\r\n");
+    }
+
+    /* ---- 3. PCA9685 初始化 (MODE2 推挽 + STOP更新) ---- */
+    pca9685_init(PCA9685_I2C_ADDR);
+    pca9685_set_pwm_freq(PCA9685_I2C_ADDR, PCA9685_SERVO_FREQ);
+    pca9685_output_enable();
+    printf("[PCA9685] 0x40 OK (50Hz, OE=L)\r\n");
+
+    /* ---- 4. ch8~ch14 初始归零 ---- */
+    for (int i = 0; i < 7; i++) {
+        pca9685_set_pwm(PCA9685_I2C_ADDR, 8 + i, 0,
+                        pca9685_angle_to_pulse(0.0f, PCA_MIN, PCA_MAX));
+    }
+    printf("[PCA9685] ch8~14 → 0 deg\r\n");
+
+    /* ---- 5. 启动 50Hz 定时器 ---- */
+    pit_ms_init(PIT_TIMER3, 20);
+    printf("[TIMER3] 50Hz started\r\n");
+
+    printf("\r\n===== Combined Test Ready =====\r\n");
+    printf("  PCA9685 ch8~14: slow sweep 0~180~0 deg\r\n");
+    printf("  MPU6050: 1Hz serial report (Gyro/Accel/Temp)\r\n");
+    printf("  Rotate sensor to verify gyro values change!\r\n");
+    printf("  Send 'c' via serial to re-calibrate gyro\r\n\r\n");
+
+    while (1)
+    {
+        while (!timer20ms_flag) __WFI();
+        timer20ms_flag = 0;
+
+        /* ---- 更新 MPU6050 数据 ---- */
+        MPU6050_Update();
+
+        /* ---- PCA9685 扫频 (ch8~ch14, 每 5 帧移动 1°) ---- */
+        if (++sweep_frame >= 5) {
+            sweep_frame = 0;
+
+            /* 扫频方向反转 */
+            sweep_angle += (float)sweep_dir * 1.0f;
+            if (sweep_angle >= 180.0f) { sweep_angle = 180.0f; sweep_dir = -1; }
+            if (sweep_angle <= 0.0f)   { sweep_angle = 0.0f;   sweep_dir =  1; }
+
+            /* 更新 ch8~ch14 角度 */
+            for (int i = 0; i < 7; i++) {
+                uint16_t pulse = pca9685_angle_to_pulse(sweep_angle, PCA_MIN, PCA_MAX);
+                pca9685_set_pwm(PCA9685_I2C_ADDR, 8 + i, 0, pulse);
+            }
+        }
+
+        /* ---- 检查串口重新校准指令 ---- */
+        {
+            uint8_t ch;
+            if (uart_query_byte(UART_DBG, &ch) && ch == 'c') {
+                MPU6050_Recalibrate();
+            }
+        }
+
+        /* ---- 1Hz 状态打印 ---- */
+        if (g_sys_ms - last_print_ms >= 1000) {
+            last_print_ms = g_sys_ms;
+            printf("GYRO(dps): X=%+5ld.%02ld Y=%+5ld.%02ld Z=%+5ld.%02ld | "
+                   "ACCEL(mg): X=%+5ld Y=%+5ld Z=%+5ld | "
+                   "TEMP=%ld.%02ld C | "
+                   "PCA_SWEEP=%.0f deg\r\n",
+                   (long)(MPU6050_GetGyroX_dps100() / 100),
+                   (long)((MPU6050_GetGyroX_dps100() >= 0
+                        ? MPU6050_GetGyroX_dps100()
+                        : -MPU6050_GetGyroX_dps100()) % 100),
+                   (long)(MPU6050_GetGyroY_dps100() / 100),
+                   (long)((MPU6050_GetGyroY_dps100() >= 0
+                        ? MPU6050_GetGyroY_dps100()
+                        : -MPU6050_GetGyroY_dps100()) % 100),
+                   (long)(MPU6050_GetGyroZ_dps100() / 100),
+                   (long)((MPU6050_GetGyroZ_dps100() >= 0
+                        ? MPU6050_GetGyroZ_dps100()
+                        : -MPU6050_GetGyroZ_dps100()) % 100),
+                   (long)MPU6050_GetAccelX_mg(),
+                   (long)MPU6050_GetAccelY_mg(),
+                   (long)MPU6050_GetAccelZ_mg(),
+                   (long)(MPU6050_GetTemp_c100() / 100),
+                   (long)(MPU6050_GetTemp_c100() % 100),
+                   (double)sweep_angle);
+        }
+    }
+    #undef PCA_MIN
+    #undef PCA_MAX
+}
+#endif /* GYRO_PCA9685_TEST */
+
 /* ==================== 机械臂示教测试 ==================== */
 #ifdef ARM_TEACH_TEST
 static void test_arm_teach(void)
@@ -296,7 +415,7 @@ static void test_arm_teach(void)
     printf("\r\n===== Ready =====\r\n");
     printf("LT/RT=Base  UP/DN=Shld  SQ/CI=Elbw  TRI/X=WrstP\r\n");
     printf("L1/L2=WrstR  R1/R2=Grip  START=Capture  SELECT=PARK\r\n");
-    printf("SERIAL: send { a,b,c,d,e,f } to move arm\r\n\r\n");
+    printf("R3=AutoSeq(6步)  SERIAL: send { a,b,c,d,e,f } to move arm\r\n\r\n");
 
     while (1)
     {
@@ -310,7 +429,17 @@ static void test_arm_teach(void)
         ServoArm_RemoteControl();
         ServoArm_HandlePresets();
         ServoArm_ProcessSerialCommand();   /* 串口角度指令 {a,b,c,d,e,f} */
+        ServoArm_SequenceUpdate();          /* 采集序列自动推进 (6阶段) */
         ServoArm_SmoothUpdate();
+
+        /* PS2 R3 一键启动采集序列 */
+        {
+            static uint8_t prev_r3 = 0;
+            if (PS2_Data.r3 && !prev_r3) {
+                ServoArm_StartSequence();
+            }
+            prev_r3 = PS2_Data.r3;
+        }
 
         /* 每秒打印状态 — 调试时取消注释 */
         //if (g_sys_ms - last_print_ms >= 1000) {
@@ -558,6 +687,8 @@ int main(void)
     test_gps();
 #elif defined(STEPPER_MODULE_TEST)
     test_stepper();
+#elif defined(GYRO_PCA9685_TEST)
+    test_gyro_pca9685();
 #else
     System_Run();
 #endif

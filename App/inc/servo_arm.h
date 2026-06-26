@@ -7,7 +7,7 @@
 * 编译环境          Keil MDK5 (uVision5)
 *
 * 功能              通过 PCA9685 (I2C) 驱动 6 路舵机:
-*                   - 安装偏移校准 (joint_offset)
+*                   - 默认位置校准 (直接改角度值)
 *                   - PS2 遥控手动调关节
 *                   - 逆运动学 XY → 关节角度
 *                   - 缓冲平滑插值
@@ -20,6 +20,7 @@
 * 2026-05-21          CIMC          GD32F407→GD32H759 移植
 * 2026-06-12          CIMC          移除 CAM_CMD 协议，新增视觉引导接口
 * 2026-06-17          CIMC          重构校准；移除视觉依赖；270°舵机适配
+* 2026-06-24          CIMC          移除 joint_offset，角度即舵机角度；换大扭力舵机重校准
 *********************************************************************************************************************/
 
 #ifndef SERVO_ARM_H
@@ -61,5 +62,8 @@ void ServoArm_SetSmoothDivider(uint8_t div);              /* 缓冲分频: 1=50H
 void ServoArm_CapturePosition(uint8_t slot);              /* 捕获当前姿态到串口 (示教用)   */
 void ServoArm_MoveToAngles(const uint16_t angles[6]);      /* 设置6关节目标角度 → 缓冲移动   */
 void ServoArm_ProcessSerialCommand(void);                  /* 检查串口(UART_DBG)角度指令     */
+void ServoArm_StartSequence(void);                         /* 一键启动采集序列 (PS2 R3调用)  */
+void ServoArm_SequenceUpdate(void);                        /* 序列状态机推进 (50Hz主循环调用) */
+uint8_t ServoArm_IsSequenceBusy(void);                     /* 查询序列是否运行中              */
 
 #endif

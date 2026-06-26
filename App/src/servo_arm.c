@@ -14,6 +14,7 @@
  * 2026-06-18      CIMC            示教模式: 遥控速度可调 + START捕获姿态
  *                                  IK/HandlePresets 保留但暂停调用
  * 2026-06-18      CIMC            新增串口角度指令: MoveToAngles + ProcessSerialCommand
+ * 2026-06-24      CIMC            移除 joint_offset 机制，角度直接即舵机角度；换大扭力舵机后重新校准
  ******************************************************************************/
 
 #include "servo_arm.h"
@@ -40,20 +41,11 @@ static const float joint_max_angle[ARM_JOINT_COUNT] = {
 };
 
 /* =================================================================================
- *  安装角度偏移校准
+ *  舵机默认位置校准
  * =================================================================================
- *  公式: servo = physical - offset
- *  校准: 遥控器调关节到基准位置 → 记串口显示值 → offset = 默认角度 - 显示值
+ *  角度直接即为舵机角度 (0~joint_max_angle[ch])，无中间 offset 层
+ *  校准: 遥控器调关节到目标姿态 → PS2 START 捕获 → 填入 action_angle 表
  */
-
-static const float joint_offset[ARM_JOINT_COUNT] = {
-     7.0f,   /* ch0 底座  默认135, 显示128 → 135-128=+7  */
-    -6.0f,   /* ch1 大臂  默认 90, 显示 96 → 90-96=-6   */
-    -7.0f,   /* ch2 小臂  默认 90, 显示 97 → 90-97=-7   */
-     3.0f,   /* ch3 腕俯仰 默认 30, 显示 27 → 30-27=+3   */
-    -8.0f,   /* ch4 腕旋转 默认 90, 显示 98 → 90-98=-8   */
-     0.0f    /* ch5 夹爪  不校准                         */
-};
 
 /* =================================================================================
  *  关节限位
@@ -69,11 +61,12 @@ static const float joint_offset[ARM_JOINT_COUNT] = {
  *  预设动作
  * ================================================================================= */
 /*            [BASE] [SHOULDER] [ELBOW] [WRIST_P] [WRIST_R] [GRIPPER]   */
+/*  ch1=新大扭力舵机, 其他沿用旧标定值                                       */
 
-#define ACT_PARK    { 135,  90,  90,  30,  90, 141 }  /* 收船 / 上电默认  */
-#define ACT_READY   {  90,  90,  90,  90,  90,  90 }  /* 准备抓取         */
-#define ACT_COLLECT {  90, 135,  45,  90,  90, 141 }  /* 闭合夹爪 + 抬起  */
-#define ACT_DROP    { 180,  90,  90,  90,  90,  51 }  /* 伸出 + 张开夹爪   */
+#define ACT_PARK    { 128,  88,  97,  27,  98, 141 }  /* 收船 / 上电默认  */
+#define ACT_READY   {  83,  88,  97,  87,  98,  90 }  /* 准备抓取         */
+#define ACT_COLLECT {  83, 133,  52,  87,  98, 141 }  /* 闭合夹爪 + 抬起  */
+#define ACT_DROP    { 173,  88,  97,  87,  98,  51 }  /* 伸出 + 张开夹爪   */
 
 static const uint16_t action_angle[4][ARM_JOINT_COUNT] = {
     [ARM_PARK]    = ACT_PARK,
@@ -101,13 +94,24 @@ static const float preset_xy[][2] = {
 
 #define PCA9685_ADDR       PCA9685_I2C_ADDR
 
-static uint16_t arm_angle[ARM_JOINT_COUNT]  = {135, 90, 90, 30, 90, 141};
+static uint16_t arm_angle[ARM_JOINT_COUNT]  = {128, 88, 97, 27, 98, 141};
 static uint16_t arm_target[ARM_JOINT_COUNT];
 static uint8_t  smooth_active   = 0;
 static uint8_t  remote_divider  = 10;    /* 遥控速度: 1=50°/s, 10=5°/s, 20=2.5°/s */
 static uint8_t  smooth_speed    = 2;     /* 缓冲步进 (°/帧), 1~10               */
 static uint8_t  smooth_divider  = 1;     /* 缓冲分频: 1=50Hz, 2=25Hz, 4=12.5Hz  */
 static uint8_t  capture_slot    = 0;     /* 示教捕获序号 */
+
+/* =================================================================================
+ *  采集序列 — 一键自动执行 (按一次 R3 跑完全部 6 阶段)
+ * =================================================================================
+ *  seq_phase: 0=空闲, 1~6=当前执行阶段号
+ *  StartSequence 设 seq_phase=1 → SequenceUpdate 自动推进,
+ *  每阶段等 smooth_active==0 后自动进入下一阶段
+ */
+#define SEQ_IDLE  0
+#define SEQ_STEPS 6
+static uint8_t  seq_phase = SEQ_IDLE;     /* 0=空闲, 1~6=当前阶段 */
 
 /* =================================================================================
  *  ServoArm_Init — 上电初始化，所有关节归默认位置
@@ -117,8 +121,8 @@ void ServoArm_Init(void)
     pca9685_init(PCA9685_ADDR);
     pca9685_set_pwm_freq(PCA9685_ADDR, PCA9685_SERVO_FREQ);
 
-    /* 上电默认: 底座135 / 大臂90 / 小臂90 / 腕俯仰30 / 腕旋转90 / 夹爪141 */
-    static const uint16_t defaults[ARM_JOINT_COUNT] = {135, 90, 90, 30, 90, 141};
+    /* 上电默认: 底座128 / 大臂88(新舵机) / 小臂97 / 腕俯仰27 / 腕旋转98 / 夹爪141 */
+    static const uint16_t defaults[ARM_JOINT_COUNT] = {128, 88, 97, 27, 98, 141};
 
     smooth_active = 0;
     for (uint8_t i = 0; i < ARM_JOINT_COUNT; i++) {
@@ -127,34 +131,29 @@ void ServoArm_Init(void)
     }
 
     pca9685_output_enable();
-    printf("ServoArm: ready, defaults=[135,90,90,30,90,141]\r\n");
+    printf("ServoArm: ready, defaults=[128,88,97,27,98,141]\r\n");
 }
 
 /* =================================================================================
- *  ServoArm_SetAngle — 单关节角度输出 (物理角度 → 偏移补偿 → PWM)
+ *  ServoArm_SetAngle — 单关节角度输出 (舵机角度 → PWM)
  * =================================================================================
- *  ch          : 0~5
- *  phys_angle  : 目标物理角度, ch0 范围 0~270°, ch1~5 范围 0~180°
- *  内部流程    : 限位 → 减 offset → 转为舵机角度 → 查 joint_max_angle → PWM
+ *  ch         : 0~5
+ *  angle      : 舵机角度, ch0 范围 0~270°, ch1~5 范围 0~180°
+ *  内部流程   : 限位 → PWM 脉宽
  */
-void ServoArm_SetAngle(uint8_t ch, float phys_angle)
+void ServoArm_SetAngle(uint8_t ch, float angle)
 {
     if (ch >= ARM_JOINT_COUNT) return;
 
-    /* 物理角度限位 */
-    float min_phys = 0.0f;
-    float max_phys = joint_max_angle[ch];
-    if (ch == ARM_CH_GRIPPER) { min_phys = GRIPPER_ANGLE_MIN; max_phys = GRIPPER_ANGLE_MAX; }
-    if (phys_angle < min_phys) phys_angle = min_phys;
-    if (phys_angle > max_phys) phys_angle = max_phys;
-
-    /* 安装偏移补偿 → 舵机角度 */
-    float servo_angle = phys_angle - joint_offset[ch];
-    if (servo_angle < 0.0f)               servo_angle = 0.0f;
-    if (servo_angle > joint_max_angle[ch]) servo_angle = joint_max_angle[ch];
+    /* 舵机角度限位 */
+    float min_a = 0.0f;
+    float max_a = joint_max_angle[ch];
+    if (ch == ARM_CH_GRIPPER) { min_a = GRIPPER_ANGLE_MIN; max_a = GRIPPER_ANGLE_MAX; }
+    if (angle < min_a) angle = min_a;
+    if (angle > max_a) angle = max_a;
 
     /* 舵机角度 → PWM 脉宽 */
-    int32_t p = (int32_t)(PULSE_0 + servo_angle * PULSE_RNG / joint_max_angle[ch]);
+    int32_t p = (int32_t)(PULSE_0 + angle * PULSE_RNG / joint_max_angle[ch]);
     if (p < PULSE_0)   p = PULSE_0;
     if (p > PULSE_FULL) p = PULSE_FULL;
 
@@ -188,6 +187,8 @@ void ServoArm_RemoteControl(void)
     uint8_t  changed = 0;
     static uint8_t tick = 0;
     static uint8_t print_cnt = 0;
+
+    if (seq_phase != SEQ_IDLE) return;  /* 序列自动执行中，忽略手动遥控 */
 
     if (++tick < remote_divider) return;
     tick = 0;
@@ -262,10 +263,10 @@ void ServoArm_MoveToXY(float x, float y)
         return;
     }
 
-    arm_target[ARM_CH_BASE]     = (uint16_t)(135.0 + IK_BASE_SIGN     * t1 + 0.5);
-    arm_target[ARM_CH_SHOULDER] = (uint16_t)( 90.0 + IK_SHOULDER_SIGN * t2 + 0.5);
-    arm_target[ARM_CH_ELBOW]    = (uint16_t)( 90.0 + IK_ELBOW_SIGN    * t3 + 0.5);
-    arm_target[ARM_CH_WRIST_P]  = (uint16_t)( 30.0 + t4 + 0.5);
+    arm_target[ARM_CH_BASE]     = (uint16_t)(128.0 + IK_BASE_SIGN     * t1 + 0.5);
+    arm_target[ARM_CH_SHOULDER] = (uint16_t)( 88.0 + IK_SHOULDER_SIGN * t2 + 0.5);
+    arm_target[ARM_CH_ELBOW]    = (uint16_t)( 97.0 + IK_ELBOW_SIGN    * t3 + 0.5);
+    arm_target[ARM_CH_WRIST_P]  = (uint16_t)( 27.0 + t4 + 0.5);
 
     for (int i = 0; i < 4; i++) {
         if (arm_target[i] > (uint16_t)joint_max_angle[i])
@@ -369,7 +370,7 @@ void ServoArm_PrintStatus(void)
 {
     printf("SERVO: ");
     for (uint8_t i = 0; i < ARM_JOINT_COUNT; i++) {
-        float sa = (float)arm_angle[i] - joint_offset[i];
+        float sa = (float)arm_angle[i];
         if (sa < 0.0f)               sa = 0.0f;
         if (sa > joint_max_angle[i]) sa = joint_max_angle[i];
 
@@ -459,8 +460,8 @@ void ServoArm_CancelMove(void)
 /* =================================================================================
  *  ServoArm_MoveToAngles — 设置6关节目标角度 → 缓冲移动
  * =================================================================================
- *  angles[6]   : 6个物理角度值, 直接赋给 arm_target, 启动 smooth 插值
- *  使用示例     uint16_t pos[] = {135, 90, 90, 30, 90, 141};
+ *  angles[6]   : 6个舵机角度值, 直接赋给 arm_target, 启动 smooth 插值
+ *  使用示例     uint16_t pos[] = {128, 88, 97, 27, 98, 141};
  *              ServoArm_MoveToAngles(pos);
  */
 void ServoArm_MoveToAngles(const uint16_t angles[6])
@@ -478,7 +479,7 @@ void ServoArm_MoveToAngles(const uint16_t angles[6])
 /* =================================================================================
  *  ServoArm_ProcessSerialCommand — 检查调试串口(UART_DBG)角度指令
  * =================================================================================
- *  格式: { 135, 126, 130, 127, 90, 90 }
+ *  格式: { 128, 88, 97, 27, 98, 141 }
  *  从 '{' 开始, '}' 结束, 内部逗号/空格分隔6个整数
  *  每次调用逐字节消费 UART_DBG FIFO, 非阻塞
  *  解析成功 → 调用 ServoArm_MoveToAngles 启动缓冲移动
@@ -555,4 +556,101 @@ void ServoArm_ProcessSerialCommand(void)
         }
         /* else: 帧外字符 → 直接丢弃 */
     }
+}
+
+/* =================================================================================
+ *  ServoArm_StartSequence — 一键启动采集序列 (R3 按下调用)
+ * =================================================================================
+ *  6 阶段自动执行:
+ *    1) 移其他关节 (大臂不动)  2) 大臂最后动    3) 闭合夹爪
+ *    4) 返回: 大臂先动         5) 返回: 其余关节  6) 张开爪子 (投放)
+ *
+ *  防重入: 序列已在运行中则忽略
+ */
+void ServoArm_StartSequence(void)
+{
+    if (seq_phase != SEQ_IDLE) return;  /* 已在运行中 */
+
+    seq_phase     = 1;
+    smooth_active = 0;
+    printf("\r\nArm: SEQ start — 6-phase auto sequence\r\n");
+}
+
+/* =================================================================================
+ *  ServoArm_SequenceUpdate — 序列自动推进 (50Hz, 在 SmoothUpdate 之前调用)
+ * =================================================================================
+ *  空闲时返回; smooth_active=1 表示当前阶段还在移动;
+ *  smooth_active=0 表示阶段完成, 自动构建下一阶段目标并启动 MoveToAngles
+ */
+void ServoArm_SequenceUpdate(void)
+{
+    uint16_t tgt[ARM_JOINT_COUNT];
+    uint8_t  i;
+
+    if (seq_phase == SEQ_IDLE) return;   /* 空闲 */
+
+    if (smooth_active) return;           /* 当前阶段还在移动中 */
+
+    /* ---- 当前阶段完成, 执行下一阶段 ---- */
+    switch (seq_phase) {
+
+    case 1:  /* 移其他关节 (大臂不动) */
+        for (i = 0; i < ARM_JOINT_COUNT; i++) tgt[i] = arm_angle[i];
+        tgt[0] = 128; tgt[2] = 145; tgt[3] = 119; tgt[4] = 99; tgt[5] = 109;
+        printf("Arm: SEQ [1/6] others -> {128, —, 145, 119, 99, 109}\r\n");
+        ServoArm_MoveToAngles(tgt);
+        seq_phase = 2;
+        break;
+
+    case 2:  /* 大臂最后动 */
+        for (i = 0; i < ARM_JOINT_COUNT; i++) tgt[i] = arm_angle[i];
+        tgt[1] = 119;
+        printf("Arm: SEQ [2/6] shoulder -> 119\r\n");
+        ServoArm_MoveToAngles(tgt);
+        seq_phase = 3;
+        break;
+
+    case 3:  /* 闭合夹爪 */
+        for (i = 0; i < ARM_JOINT_COUNT; i++) tgt[i] = arm_angle[i];
+        tgt[5] = 141;
+        printf("Arm: SEQ [3/6] close claw -> 141\r\n");
+        ServoArm_MoveToAngles(tgt);
+        seq_phase = 4;
+        break;
+
+    case 4:  /* 返回 — 大臂先动 */
+        for (i = 0; i < ARM_JOINT_COUNT; i++) tgt[i] = arm_angle[i];
+        tgt[1] = 88;
+        printf("Arm: SEQ [4/6] return shoulder first -> 88\r\n");
+        ServoArm_MoveToAngles(tgt);
+        seq_phase = 5;
+        break;
+
+    case 5:  /* 返回 — 其余关节归 PARK */
+        for (i = 0; i < ARM_JOINT_COUNT; i++) tgt[i] = arm_angle[i];
+        tgt[2] = 97; tgt[3] = 27; tgt[4] = 98;
+        printf("Arm: SEQ [5/6] return others -> PARK\r\n");
+        ServoArm_MoveToAngles(tgt);
+        seq_phase = 6;
+        break;
+
+    case 6:  /* 张开爪子 (投放) */
+        for (i = 0; i < ARM_JOINT_COUNT; i++) tgt[i] = arm_angle[i];
+        tgt[5] = 51;
+        printf("Arm: SEQ [6/6] open claw (drop)\r\n");
+        ServoArm_MoveToAngles(tgt);
+        seq_phase = SEQ_IDLE;
+        printf("Arm: SEQ done!\r\n");
+        break;
+    }
+}
+
+/* =================================================================================
+ *  ServoArm_IsSequenceBusy — 查询序列是否运行中
+ * =================================================================================
+ *  返回值: 0=空闲, 1=运行中 (等待移动完成 或 正在推进)
+ */
+uint8_t ServoArm_IsSequenceBusy(void)
+{
+    return (seq_phase != SEQ_IDLE) ? 1 : 0;
 }
