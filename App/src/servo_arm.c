@@ -22,18 +22,30 @@
 #include "ps2.h"
 #include "arm_ik.h"
 #include "uart_driver.h"
+#include "motor_driver.h"
 #include <stdio.h>
 
 /* =================================================================================
  *  舵机硬件参数
  * =================================================================================
- *  PWM 50Hz, 0°→0.5ms(102count), max°→2.5ms(512count)
- *  脉宽公式: pulse = 102 + angle × 410 / joint_max_angle[ch]
+ *  50Hz: 0°→0.5ms(102count), max°→2.5ms(512count), 周期=20ms
+ *  244Hz: 0°→0.5ms(500count), max°→2.5ms(2500count), 周期≈4.1ms, 1count=1μs
+ *  脉宽公式: pulse = PULSE_0 + angle × PULSE_RNG / joint_max_angle[ch]
  */
 
-#define PULSE_0      102
-#define PULSE_FULL   512
-#define PULSE_RNG    (PULSE_FULL - PULSE_0)   /* 410 */
+#ifdef MOTOR_USE_PCA9685
+  /* PCA9685 @ 244Hz: 1 step = 1μs */
+  #define PULSE_0      500
+  #define PULSE_FULL   2500
+  #define PULSE_RNG    (PULSE_FULL - PULSE_0)   /* 2000 */
+  #define PCA_FREQ_HZ  244.0f
+#else
+  /* 默认 50Hz */
+  #define PULSE_0      102
+  #define PULSE_FULL   512
+  #define PULSE_RNG    (PULSE_FULL - PULSE_0)   /* 410 */
+  #define PCA_FREQ_HZ  50.0f
+#endif
 
 /* 各通道舵机最大行程 (度) — ch0 为 270° 舵机，其余 180° */
 static const float joint_max_angle[ARM_JOINT_COUNT] = {
@@ -113,13 +125,28 @@ static uint8_t  capture_slot    = 0;     /* 示教捕获序号 */
 #define SEQ_STEPS 6
 static uint8_t  seq_phase = SEQ_IDLE;     /* 0=空闲, 1~6=当前阶段 */
 
+static uint8_t  remote_enabled  = 1;     /* 手动遥控使能: 1=允许, 0=禁用  */
+
+/* =================================================================================
+ *  ServoArm_SetRemoteEnabled — 使能/禁用手动遥控 (自动模式下禁用)
+ * ================================================================================= */
+void ServoArm_SetRemoteEnabled(uint8_t en)
+{
+    remote_enabled = en;
+}
+
 /* =================================================================================
  *  ServoArm_Init — 上电初始化，所有关节归默认位置
  * ================================================================================= */
 void ServoArm_Init(void)
 {
+#ifdef MOTOR_USE_PCA9685
+    /* PCA9685 已在 motor_init() 中初始化并设置为 244Hz，此处只做舵机侧验证 */
+    printf("ServoArm: PCA9685 @ %.0fHz (shared with motor)\r\n", PCA_FREQ_HZ);
+#else
     pca9685_init(PCA9685_ADDR);
     pca9685_set_pwm_freq(PCA9685_ADDR, PCA9685_SERVO_FREQ);
+#endif
 
     /* 上电默认: 底座128 / 大臂88(新舵机) / 小臂97 / 腕俯仰27 / 腕旋转98 / 夹爪141 */
     static const uint16_t defaults[ARM_JOINT_COUNT] = {128, 88, 97, 27, 98, 141};
@@ -130,7 +157,6 @@ void ServoArm_Init(void)
         ServoArm_SetAngle(i, (float)defaults[i]);
     }
 
-    pca9685_output_enable();
     printf("ServoArm: ready, defaults=[128,88,97,27,98,141]\r\n");
 }
 
@@ -167,7 +193,6 @@ void ServoArm_SetAction(ArmAction action)
 {
     if (action > ARM_DROP) return;
 
-    pca9685_output_enable();
     for (uint8_t i = 0; i < ARM_JOINT_COUNT; i++) {
         arm_target[i] = action_angle[action][i];
     }
@@ -184,11 +209,11 @@ void ServoArm_SetAction(ArmAction action)
 void ServoArm_RemoteControl(void)
 {
     uint16_t prev[ARM_JOINT_COUNT];
-    uint8_t  changed = 0;
     static uint8_t tick = 0;
-    static uint8_t print_cnt = 0;
 
     if (seq_phase != SEQ_IDLE) return;  /* 序列自动执行中，忽略手动遥控 */
+
+    if (!remote_enabled) return;        /* 自动模式下禁用手动遥控 */
 
     if (++tick < remote_divider) return;
     tick = 0;
@@ -198,52 +223,43 @@ void ServoArm_RemoteControl(void)
         PS2_Data.square|| PS2_Data.circle|| PS2_Data.triangle||PS2_Data.cross||
         PS2_Data.l1    || PS2_Data.l2    || PS2_Data.r1    || PS2_Data.r2) {
         smooth_active = 0;
-        pca9685_output_enable();
     }
 
     /* ch0 底座 — ← → */
     prev[0] = arm_angle[0];
     if (PS2_Data.left)  { if (arm_angle[0] > 0)                             arm_angle[0]--; }
     if (PS2_Data.right) { if (arm_angle[0] < (uint16_t)joint_max_angle[0]) arm_angle[0]++; }
-    if (arm_angle[0] != prev[0]) { ServoArm_SetAngle(0, (float)arm_angle[0]); changed = 1; }
+    if (arm_angle[0] != prev[0]) { ServoArm_SetAngle(0, (float)arm_angle[0]); }
 
     /* ch1 大臂 — ↑ ↓ */
     prev[1] = arm_angle[1];
     if (PS2_Data.up)    { if (arm_angle[1] < (uint16_t)joint_max_angle[1]) arm_angle[1]++; }
     if (PS2_Data.down)  { if (arm_angle[1] > 0)                             arm_angle[1]--; }
-    if (arm_angle[1] != prev[1]) { ServoArm_SetAngle(1, (float)arm_angle[1]); changed = 1; }
+    if (arm_angle[1] != prev[1]) { ServoArm_SetAngle(1, (float)arm_angle[1]); }
 
     /* ch2 小臂 — □ ○ */
     prev[2] = arm_angle[2];
     if (PS2_Data.square){ if (arm_angle[2] > 0)                             arm_angle[2]--; }
     if (PS2_Data.circle){ if (arm_angle[2] < (uint16_t)joint_max_angle[2]) arm_angle[2]++; }
-    if (arm_angle[2] != prev[2]) { ServoArm_SetAngle(2, (float)arm_angle[2]); changed = 1; }
+    if (arm_angle[2] != prev[2]) { ServoArm_SetAngle(2, (float)arm_angle[2]); }
 
     /* ch3 腕俯仰 — △ × */
     prev[3] = arm_angle[3];
     if (PS2_Data.triangle){ if (arm_angle[3] > 0)                             arm_angle[3]--; }
     if (PS2_Data.cross)  { if (arm_angle[3] < (uint16_t)joint_max_angle[3]) arm_angle[3]++; }
-    if (arm_angle[3] != prev[3]) { ServoArm_SetAngle(3, (float)arm_angle[3]); changed = 1; }
+    if (arm_angle[3] != prev[3]) { ServoArm_SetAngle(3, (float)arm_angle[3]); }
 
     /* ch4 腕旋转 — L1 L2 */
     prev[4] = arm_angle[4];
     if (PS2_Data.l1)    { if (arm_angle[4] > 0)                             arm_angle[4]--; }
     if (PS2_Data.l2)    { if (arm_angle[4] < (uint16_t)joint_max_angle[4]) arm_angle[4]++; }
-    if (arm_angle[4] != prev[4]) { ServoArm_SetAngle(4, (float)arm_angle[4]); changed = 1; }
+    if (arm_angle[4] != prev[4]) { ServoArm_SetAngle(4, (float)arm_angle[4]); }
 
     /* ch5 夹爪 — R1 R2 (独立安全限位) */
     prev[5] = arm_angle[5];
     if (PS2_Data.r1)    { if (arm_angle[5] > GRIPPER_ANGLE_MIN) arm_angle[5]--; }
     if (PS2_Data.r2)    { if (arm_angle[5] < GRIPPER_ANGLE_MAX) arm_angle[5]++; }
-    if (arm_angle[5] != prev[5]) { ServoArm_SetAngle(5, (float)arm_angle[5]); changed = 1; }
-
-    /* 变化时偶尔打印 — 调试时取消注释 */
-    //if (changed && ++print_cnt % 5 == 1) {
-    //    printf("Arm: B%03u S%03u E%03u WP%03u WR%03u G%03u\r\n",
-    //           (unsigned)arm_angle[0], (unsigned)arm_angle[1],
-    //           (unsigned)arm_angle[2], (unsigned)arm_angle[3],
-    //           (unsigned)arm_angle[4], (unsigned)arm_angle[5]);
-    //}
+    if (arm_angle[5] != prev[5]) { ServoArm_SetAngle(5, (float)arm_angle[5]); }
 }
 
 /* =================================================================================
@@ -273,7 +289,6 @@ void ServoArm_MoveToXY(float x, float y)
             arm_target[i] = (uint16_t)joint_max_angle[i];
     }
 
-    pca9685_output_enable();
     smooth_active = 1;
     printf("Arm IK: B%u S%u E%u WP%u <- (%.0f, %.0f)\r\n",
            (unsigned)arm_target[ARM_CH_BASE], (unsigned)arm_target[ARM_CH_SHOULDER],
@@ -309,7 +324,6 @@ void ServoArm_SmoothUpdate(void)
 
     if (!moving) {
         smooth_active = 0;
-        pca9685_output_disable();
     }
 }
 
@@ -377,7 +391,11 @@ void ServoArm_PrintStatus(void)
         int32_t  p   = (int32_t)(PULSE_0 + sa * PULSE_RNG / joint_max_angle[i]);
         if (p < PULSE_0)   p = PULSE_0;
         if (p > PULSE_FULL) p = PULSE_FULL;
+#ifdef MOTOR_USE_PCA9685
+        uint16_t pus = (uint16_t)p;   /* 244Hz: 1count = 1μs */
+#else
         uint16_t pus = (uint16_t)((uint32_t)p * 20000UL / 4096UL);
+#endif
 
         printf("ch%u:%3ud/%4uus ", (unsigned)i, (unsigned)arm_angle[i], (unsigned)pus);
     }
@@ -454,7 +472,6 @@ void ServoArm_CapturePosition(uint8_t slot)
 void ServoArm_CancelMove(void)
 {
     smooth_active = 0;
-    pca9685_output_disable();
 }
 
 /* =================================================================================
@@ -466,7 +483,6 @@ void ServoArm_CancelMove(void)
  */
 void ServoArm_MoveToAngles(const uint16_t angles[6])
 {
-    pca9685_output_enable();
     for (uint8_t i = 0; i < ARM_JOINT_COUNT; i++) {
         arm_target[i] = angles[i];
     }

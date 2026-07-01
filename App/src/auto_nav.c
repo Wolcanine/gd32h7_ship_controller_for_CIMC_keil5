@@ -13,8 +13,8 @@
 // auto_nav.c — 自动航行模块（避障实现）
 // =============================================
 // 自动 / 手动由 PS2 手柄 mode 变量决定：
-//   PS2_MODE_ANALOG (0x73, 红灯亮) = 手动
-//   PS2_MODE_DIGITAL(0x41, 红灯灭) = 自动
+//   PS2_MODE_ANALOG (0x73, 绿灯亮) = 手动
+//   PS2_MODE_DIGITAL(0x41, 绿灯灭) = 自动
 //
 // 自动模式：激光测距避障
 //   直行 → 遇障 → 陀螺仪角度闭环转向 → 确认安全 → 恢复直行
@@ -145,6 +145,17 @@ void AutoNav_Process(void)
         }
         break;
     }
+}
+
+// ==================== 重置状态 ====================
+void AutoNav_ResetState(void)
+{
+    nav_state       = NAV_STATE_FORWARD;
+    obstacle_cnt    = 0;
+    nav_yaw         = 0.0f;
+    turn_start_yaw  = 0.0f;
+    auto_throttle   = 0.0f;
+    auto_steering   = 0.0f;
 }
 
 // ==================== 查询函数 ====================

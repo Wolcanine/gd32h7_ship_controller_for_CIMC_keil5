@@ -48,9 +48,10 @@ typedef enum {
 
 /* ==================== API ==================== */
 void ServoArm_Init(void);                                 /* 初始化 PCA9685, 归默认位置   */
-void ServoArm_SetAngle(uint8_t ch, float angle);          /* 单关节角度输出 (含偏移补偿)   */
+void ServoArm_SetAngle(uint8_t ch, float angle);          /* 单关节角度输出               */
 void ServoArm_SetAction(ArmAction action);                /* 执行预设动作 (缓冲插值)       */
 void ServoArm_RemoteControl(void);                        /* PS2 手动调关节, 速度可调     */
+void ServoArm_SetRemoteEnabled(uint8_t en);               /* 使能/禁用手动遥控 (自动模式下禁用) */
 void ServoArm_HandlePresets(void);                        /* [暂禁用] PS2 START/SELECT    */
 void ServoArm_MoveToXY(float x, float y);                 /* [暂禁用] IK 解算 → 缓冲移动  */
 void ServoArm_SmoothUpdate(void);                         /* 缓冲插值推进 (50Hz 调用)     */

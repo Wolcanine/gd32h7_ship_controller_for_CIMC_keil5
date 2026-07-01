@@ -1,0 +1,131 @@
+工作记录 — 2026-07-01
+项目: 水面垃圾收集船主控程序
+MCU:  GD32H759IMK6
+IDE:  Keil MDK5 (uVision5)
+
+======================================================================
+一、代码整理 — 去除冗余 + 修复问题
+======================================================================
+
+  【BUG 修复】
+    1. main.c: GPS_MODULE_TEST 重复定义 + 与 STEPPER_MODULE_TEST 同时启用
+       - line 20 GPS_MODULE_TEST 未注释 + line 25 重复定义
+       - 修复: 注释 line 20，删除 line 25 重复行
+
+    2. laser.c: 5 处 printf 使用 %lu + (unsigned long)
+       - 违反 MicroLIB 兼容约定 (%lu 支持有限)
+       - 修复: 全部改为 %u + (unsigned)
+
+  【过期注释修复】
+    3. laser.h: Laser_Init 文档写 UART3/PA0/PA1 → USART1/PA2/PD6
+    4. uart_driver.h: 示例写 UART_TOF → UART_USART1
+    5. MPU6050.h: 硬件接线表 SCL/SDA PB10/PB11 → PE13/PE15
+    6. MPU6050.h/MyI2C.h/MPU6050_Reg.h: 目标平台 GD32H7XXVET6 → GD32H759IMK6
+    7. MyI2C.h: 默认接线表 PH11/PH12 → PE13(J5-33)/PE15(J5-31)
+    8. servo_arm.h: SetAngle 注释"含偏移补偿"→ 删除（2026-06-24 已移除偏移）
+    9. ship_controller.c: 删除冗余 "// ship_controller.c" 注释
+
+  【死代码清理】
+    10. pwm_output.c: 删除重复的 START_THRESHOLD/KICK_DUTY/KICK_FRAMES (与 THR_* 重复)
+    11. servo_arm.c: 删除未使用的 print_cnt 变量和已注释的调试打印块
+    12. servo_arm.c: 删除从未读取的 changed 变量及其 6 处赋值
+
+  【健壮性改进】
+    13. MyI2C.c: MyI2C_W_SCL / MyI2C_W_SDA / MyI2C_R_SDA 加 static（内部函数不应暴露）
+    14. gd32_driver_pwm.c: 补全 GPIOF / GPIOG 时钟使能分支
+
+======================================================================
+二、手动/自动双模正式运行代码
+======================================================================
+
+  【背景】
+    - System_Run() 存在三个关键缺口:
+      ① ShipController_Update() 初始化但从未调用 → 电机从不驱动
+      ② AutoNav_Process() 初始化但从未调用 → 自动模式不工作
+      ③ motor_throttle_tick() 从未调用 → 油门缓启动/突加不生效
+    - PS2 L1/L2 同时控制机械臂腕旋转(ch4)和步进电机，存在按键冲突
+    - auto_nav.c 已内置模式感知 (AutoNav_Process 手动时 return,
+      AutoNav_GetThrottle/Steering 手动时回退到 PS2 值)，大幅简化上层逻辑
+
+  【架构设计】
+    - 运行时切换: PS2 ANALOG 键切换手动/自动 (单固件，无需重编译)
+    - 手动模式: PS2 摇杆 → ShipController PID 稳定 → 电机输出
+    - 自动模式: 激光避障状态机 → ShipController PID 稳定 → 电机输出
+    - 电机驱动: compile-time 宏 MOTOR_USE_PCA9685 切换 GPIOC/PCA9685 双后端
+
+  【新建文件】
+    App/inc/motor_driver.h
+      - 电机驱动抽象接口: motor_init / set_left_duty / set_right_duty / throttle_tick / stop
+      - 编译开关 MOTOR_USE_PCA9685 (未定义=GPIOC, 定义=PCA9685)
+
+    App/src/motor_driver.c
+      - GPIOC 路径: 透传 pwm_output.c 函数
+      - PCA9685 路径: CH6~CH9 @ 244Hz H 桥控制 (与 SERVO_200HZ_TEST 验证一致)
+
+  【修改文件】
+    User/main.c (核心改动)
+      - System_Run() 循环重写:
+        ① AutoNav_Process() → 自动模式运行避障状态机, 手动模式直接 return
+        ② ShipController_Update(&sc, throttle, steering) → PID 闭环 → 电机
+        ③ motor_throttle_tick() → 油门缓启动/突加 → 硬件输出
+      - 模式切换检测: NavMode 变化 → Reset PID + AutoNav + 电机置零
+      - PS2 断连安全: 电机置零 + 步进停止 + 5 秒告警一次
+      - L1/L2 冲突解决:
+        手动模式: L1/L2 = 腕旋转, SELECT+L1/L2 = 步进电机
+        自动模式: L1/L2 = 步进电机直接, 直行自动开传送带
+      - 模式感知 1Hz 上报: 自动模式显示 STATE/THR/STR/LASER/YAW
+                          手动模式显示 PS2/GYRO/ACCEL/LASER
+      - 新增 R3 一键启动采集序列
+      - 新增 ServoArm_SequenceUpdate 调用
+      - 急停升级: pwm_set_* → motor_stop()
+
+    ship_controller.h/c
+      - #include "pwm_output.h" → "motor_driver.h"
+      - 新增 ShipController_Reset() — 模式切换时清 PID 积分/微分
+
+    auto_nav.h/c
+      - 新增 AutoNav_ResetState() — 模式切换时重置避障状态机
+
+    servo_arm.h/c
+      - 新增 ServoArm_SetRemoteEnabled() — 自动模式下禁用 arm 手动遥控
+      - PCA9685 244Hz 适配: #ifdef MOTOR_USE_PCA9685 切换脉宽计算参数
+        (50Hz: PULSE_0=102/PULSE_FULL=512, 244Hz: 500/2500, 1count=1μs)
+      - ServoArm_Init: PCA9685 模式下跳过 pca9685_init/set_pwm_freq
+        (由 motor_init 统一设置 244Hz)
+      - ServoArm_PrintStatus: PCA9685 模式下 pus=p (1count=1μs)
+
+  【L1/L2 按键映射】
+    ┌────────────┬─────────────────────┬──────────────────────┐
+    │  场景       │ L1/L2               │ 步进电机              │
+    ├────────────┼─────────────────────┼──────────────────────┤
+    │  手动模式   │ 腕旋转 CH4          │ SELECT+L1/L2         │
+    │  自动模式   │ 步进 正转/反转      │ L1/L2 直接(超驰自动)  │
+    └────────────┴─────────────────────┴──────────────────────┘
+
+  【50Hz 主循环执行顺序 (System_Run)】
+    1. 等待 timer20ms_flag (500ms 超时 → motor_stop 急停)
+    2. ps2_read_data / MPU6050_Update / Laser_GetDistanceCm / GPS_Process
+    3. PS2 断连检测 → 电机置零 → goto arm_and_report
+    4. AutoNav_Process() (手动模式内部 return)
+    5. 模式切换检测 → Reset PID + AutoNav
+    6. throttle/steering = AutoNav_GetThrottle/Steering
+    7. ShipController_Update(&sc, throttle, steering)
+    8. motor_throttle_tick()
+    9. 步进电机控制 (模式感知)
+    10. arm_and_report: 机械臂 (RemoteControl/Presets/SerialCommand/SmoothUpdate/SequenceUpdate)
+    11. R3 一键启动采集序列
+    12. 1Hz 上报 (模式感知格式)
+
+  【安全机制】
+    - PS2 断连 → 电机置零 + 步进停止 (5s 间隔告警)
+    - 主循环超时 500ms → motor_stop() 短路刹车
+    - MPU6050 失效 → ShipController 自动旁通 PID，直接透传油门
+    - 模式切换 → 先置零电机 → 重置 PID 积分 + 避障状态机
+
+======================================================================
+三、改动统计
+======================================================================
+
+  新建文件:  2  (motor_driver.h, motor_driver.c)
+  修改文件: 16  (main.c, ship_controller, auto_nav, servo_arm, laser, ...)
+  +448 行 / -356 行 (净增 92 行，含大量新功能代码)

@@ -32,6 +32,7 @@
 │
 ├── App/inc/                     ★ 应用层头文件（你的主要修改区）
 │   ├── main.h                   主程序公共声明
+│   ├── motor_driver.h             ★ 电机驱动抽象接口（GPIOC/PCA9685 双后端）
 │   ├── pwm_output.h             四电机 PWM 驱动接口（双引脚 H 桥）
 │   ├── servo_arm.h              6 舵机机械臂控制接口
 │   ├── pca9685.h                PCA9685 I2C PWM 驱动器
@@ -64,28 +65,30 @@
 └── 要制作的接线板引脚表_按模块.txt  实际使用的引脚分配表（按模块整理）
 
 ================================================================================
-三、当前代码状态（2026-06-26）
+三、当前代码状态（2026-07-01）
 ================================================================================
 
-  最新提交: 4618568  接线板 MPU6050+PCA9685 验证通过 + 新增 GYRO_PCA9685_TEST
-  详见: 工作记录_2026-06-26.txt
+  最新提交: (待提交)  手动/自动双模正式运行代码 + 代码整理去冗余
+  详见: 工作记录_2026-07-01.txt
 
 ✅ 已验证通过：
   - 调试串口 (UART4, CH340)    — printf 重定向正常
   - PS2 遥控器                  — 16按键 + 双摇杆
-  - MPU6050 陀螺仪              — I2C, 芯片ID=0x68 (2026-06-26 接线板复验通过)
-  - TOF200F 激光测距            — UART3, Modbus 通信
-  - 电机 PWM 驱动               — 双引脚 H 桥, 四路 GPIOC
-  - 舵机 PCA9685                — I2C, 6路校准 + IK + PS2 遥控 (2026-06-26 接线板复验通过)
-  - 步进电机传送带              — PG3/PD4/PH6, TIMER6 2kHz (2026-06-22 修复 Stepper_SetSpeed 幂等bug)
-  - SW UART 双路全双工          — PE2/PE5 + PF7/PF6, 9600, PC 回显通过
-  - GPS/北斗模块                — ATGM336H-5N, SW UART CH1 @ 9600bps, 定位/解析正常
-  - 接线板 I2C 总线             — PE13/PE15, MPU6050+PCA9685 共享总线正常 (2026-06-26)
+  - MPU6050 陀螺仪              — I2C, 芯片ID=0x68
+  - TOF200F 激光测距            — USART1 PA2/PD6, Modbus 通信 (2026-06-30 从 UART3 迁至)
+  - 电机 PWM 驱动               — GPIOC 软件 PWM / PCA9685 CH6~CH9 双后端
+  - 舵机 PCA9685                — I2C, 6路校准 + IK + PS2 遥控
+  - 步进电机传送带              — PG3/PD4/PH6, TIMER6 2kHz
+  - SW UART 双路全双工          — PE2/PE5 + PF7/PF6, 9600
+  - GPS/北斗模块                — ATGM336H-5N, SW UART CH1 @ 9600bps
+  - 接线板 I2C 总线             — PE13/PE15, MPU6050+PCA9685 共享总线正常
+  - PCA9685 244Hz 舵机兼容      — 已验证，为 PCA9685 统一驱动舵机+电机做准备
 
 ⏸ 待完成：
   - 视觉模块 — 接口预留, 待对接
   - IK 标定 — 实测有效范围有偏差
-  - 全系统联调 — 各模块独立测试完成后
+  - 全系统联调 — 手动/自动模式水面实测
+  - PCA9685 电机驱动 — GPIOC 路径已验证, PCA9685 路径待接线板实测
 
 ================================================================================
 四、引脚分配（当前生效）
@@ -103,7 +106,8 @@
   OE  = PC11 (J4-52)  使能端（低电平有效），原 UART_CAM RX，已复用
 
 【传感器】：
-  TOF200F 激光:  UART3,  PA0-TX(J5-44) / PA1-RX(J5-43), 115200
+  TOF200F 激光:  USART1, PA2-TX(J4-21) / PD6-RX(J4-23), AF7, 115200
+                 注意: 需拔掉 PA2/PD6 的 RS485 跳线帽
   调试串口:      UART4,  PB5-TX(J5-38) / PB13-RX(J5-36), 9600 → CH340 → USB
   MPU6050:       I2C,    PE13-SCL / PE15-SDA (与 PCA9685 共享)
   OLED:          另一个项目控制，本项目不管理
@@ -125,11 +129,11 @@
   CH2: PF7-TX(J4-17) / PF6-RX(J4-19)  9600, GPIOF, TIMER1 @ 28.8kHz 【预留】
 
 【预留硬件串口】(因 GPIOD/GPIOF RX 硬件不可用, 暂由 SW UART 替代)：
-  USART1: PA2-TX(J4-21) / PD6-RX(J4-23)  — RX 不可用
   UART6:  PF7-TX(J4-17) / PF6-RX(J4-19)  — 被 SW UART2 占用
 
 【已释放可复用引脚】：
-  PA2 (J4-21), PD6 (J4-23) — 原 USART1/SW UART1, PD6 输入不可用, 已释放
+  PA0 (J5-44), PA1 (J5-43) — 原 TOF200F UART3, TOF 已迁至 USART1
+  PC2/PC3/PC5/PC10 — 原电机 GPIOC PWM, 后续可完全迁至 PCA9685 后释放
   PF9/PD2/PC12 — 已被另一工程触摸屏 XPT2046 占用
 
 【⚠ GPIOD 端口限制 (2026-06-18 确认)】：
@@ -163,7 +167,23 @@
    - vision.h/c 为占位实现，数据结构已定义，等待实际摄像头接口对接
    - UART_CAM (UART7, PC10/PC11) 已废弃，引脚已释放
 
-5. PCA9685 OE 使能 + MODE2 推挽输出 + 舵机校准
+5. 手动/自动双模运行 (2026-07-01 新增)
+   - 运行时 PS2 ANALOG 键切换：绿灯亮(0x73, 模拟)=手动, 绿灯灭(0x41, 数字)=自动
+   - 手动: PS2 摇杆 → ShipController PID 稳定 → motor_driver → 电机
+   - 自动: 激光避障状态机 → ShipController PID 稳定 → motor_driver → 电机
+   - 模式切换时自动重置 PID 积分和避障状态机
+   - PS2 断连安全: 电机置零 + 步进停止 + 5s 间隔告警
+   - L1/L2 冲突解决: 手动=腕旋转(CH4), SELECT+L1/L2=步进; 自动=L1/L2=步进直接
+
+6. 电机驱动抽象 (motor_driver.h/c, 2026-07-01 新增)
+   - 编译时宏 MOTOR_USE_PCA9685 选择后端
+   - 未定义 = GPIOC 软件 PWM (pwm_output.c, 200Hz TIMER4)
+   - 定义   = PCA9685 I2C PWM (CH6~CH9 @ 244Hz, 与舵机 CH0~CH5 共用芯片)
+   - 统一 API: motor_init / motor_set_left_duty / motor_set_right_duty /
+               motor_throttle_tick / motor_stop
+   - 舵机 244Hz 适配: 脉宽计算自动切换 (50Hz: 102~512count, 244Hz: 500~2500step)
+
+7. PCA9685 OE 使能 + MODE2 推挽输出 + 舵机校准
    - OE 引脚（PC12）低电平有效
    - 机械臂空闲时自动关闭 PWM 输出（省电 + 避免舵机抖动）
    - MODE2: OUTDRV=1(推挽)+OCH=1(STOP更新), 回读验证
@@ -173,12 +193,12 @@
    - PS2 SELECT 回 PARK (与上电默认一致)
    - 串口 1Hz 上报 6路角度+脉宽μs
 
-6. 电机 PWM 双引脚 H 桥 + 油门分层控制
+8. 电机 PWM 双引脚 H 桥 + 油门分层控制
    - 四路 PWM 全部在 GPIOC: D0=PC2, D1=PC3, D2=PC5, D3=PC10
    - 软件 PWM 200Hz (TIMER4), 正向HIGH=有效
    - 油门分层 + 启动突加 + 方向切换刹车保护
 
-7. 软件 UART (sw_uart)
+9. 软件 UART (sw_uart)
    - TIMER1 @ 28.8kHz (3x 过采样 = 9600 × 3)
    - 两路全双工，同一 ISR 处理收发状态机
    - CH1 分配 GPS 模块 (ATGM336H-5N), CH2 预留
@@ -187,11 +207,11 @@
    - 使用 GPIO_ISTAT 直读 + gpio_bit_set/reset 直写
    - printf 格式必须用 %u 而非 %lu (MicroLIB 兼容)
 
-7. GPIOD 端口限制
+10. GPIOD 端口限制
    - GPIOD 全端口不可用于 GPIO 输入 (仅输出可用)
    - 所有输入引脚避开 GPIOD
 
-8. 编译注意事项
+11. 编译注意事项
    - GD32H7 标准库没有 GPIO_OSPEED_2MHZ 宏（仅支持高速），使用 GPIO_OSPEED_60MHZ
    - ARM Compiler 5 不完全支持 printf 中的 UTF-8 多字节字符，请使用 ASCII 替代
    - Keil 需勾选 "Use MicroLIB" 以使用 printf 重定向
@@ -201,14 +221,18 @@
 六、测试模式
 ================================================================================
 
-main.c 顶部有六个测试宏，同时只启用一个。全部注释 = 正常全系统模式。
+main.c 顶部有多个测试宏，同时只启用一个。全部注释 = 正常全系统模式（手动/自动双模）。
 
-  //#define MOTOR_MODULE_TEST       四电机 PWM + PS2 遥控
-  //#define PCA9685_MODULE_TEST     舵机 PCA9685 + PS2 遥控
-  //#define DIRECT_SERVO_SWEEP     舵机扫频 (PF9, 50Hz PWM)
+  //#define MOTOR_MODULE_TEST       四电机 PWM + PS2 遥控 (GPIOC)
+  //#define PCA9685_MODULE_TEST     舵机 PCA9685 + PS2 遥控 (ch8~ch14 固定角度)
+  //#define DIRECT_SERVO_SWEEP     舵机扫频 (PF9 直驱 50Hz PWM + PCA9685 参考)
   //#define SW_UART_ECHO_TEST       SW UART 两路 PC 回显测试 (9600bps)
   //#define GPS_MODULE_TEST         GPS 模块接收测试 (SW UART CH1, 9600bps)
-  //#define STEPPER_MODULE_TEST     步进电机传送带测试 (PS2 L1/L2)
+  //#define STEPPER_MODULE_TEST     步进电机传送带测试 (持续正转)
+  //#define SERVO_200HZ_TEST        PCA9685 244Hz 舵机+电机联合测试
+  //#define ARM_TEACH_TEST          机械臂示教测试 (PS2 遥控 + 序列 + 串口指令)
+  //#define GYRO_PCA9685_TEST       MPU6050 + PCA9685 组合测试
+  //#define UART_DBG_ECHO_TEST      调试串口回显测试 (UART4 RX→TX 回环验证)
 
 MOTOR_MODULE_TEST:
   - PS2 ↑↓ 油门 +/-1%, □○ 油门 +/-5%, ←→ 差速, × 回正, △ 急停
@@ -232,10 +256,31 @@ GPS_MODULE_TEST:
   - 冷启动首次定位需 30s~数分钟，需在开阔地/窗边测试
 
 STEPPER_MODULE_TEST:
-  - PS2 L1=正转(收垃圾), L2=反转(释放), 松手=停止
-  - 每秒打印累计步数
+  - 上电即持续正转 (speed_div=1, 2000Hz), 每秒打印累计步数
   - 引脚: STEP=PG3 DIR=PD4 EN=PH6, TIMER6 @ 2kHz
   - Stepper_SetSpeed 已做幂等保护：dir/speed_div 未变则跳过重置，避免 50Hz 循环打断脉冲序列
+
+SERVO_200HZ_TEST:
+  - PCA9685 @ 244Hz (1μs/step), CH0=0° CH1=180° 舵机参考
+  - CH6~CH9 差速电机 H 桥 (PS2 油门+转向), CH10 主驱动电机
+  - TOF200F USART1 PA2/PD6 激光测距
+  - PS2 × 刹车, I2C: PE13/PE15
+
+ARM_TEACH_TEST:
+  - 仅初始化 PS2 + PCA9685 + 50Hz 定时器 (最小依赖)
+  - PS2 遥控 6 关节 (方向键/功能键/L1L2R1R2)
+  - START=捕获姿态到串口, SELECT=PARK, R3=一键 6 阶段采集序列
+  - 串口指令: { a,b,c,d,e,f } → MoveToAngles 缓冲移动
+
+GYRO_PCA9685_TEST:
+  - MPU6050 陀螺仪 + PCA9685 舵机联合测试
+  - PCA9685 ch8~ch14 慢速扫频 0~180°
+  - 串口 'c' 重新校准陀螺仪
+  - I2C: PE13/PE15 共享总线验证
+
+UART_DBG_ECHO_TEST:
+  - UART4 (PB5/PB13 @ 9600) RX→TX 回环验证
+  - 收到字节打印 RX 序号 + 字符 + HEX 值
 
 ================================================================================
 七、编码风格与约定
@@ -249,6 +294,7 @@ STEPPER_MODULE_TEST:
 - 函数注释：使用分隔线 + 参数说明 + 使用示例的格式（参考 uart_driver.h / vision.h）
 - API 命名：
     pwm_xxx         电机 PWM 相关
+    motor_xxx       电机驱动抽象 (GPIOC/PCA9685 双后端)
     ServoArm_xxx    机械臂相关（PascalCase）
     Vision_xxx      视觉模块相关
     uart_xxx        串口驱动（小写+下划线）

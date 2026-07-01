@@ -4,7 +4,7 @@
  * MCU             GD32H759IMK6
  * IDE             Keil MDK5 (uVision5)
  *
- * 通信接口        UART3, PA0-TX / PA1-RX, AF8, 115200 8N1
+ * 通信接口        USART1, PA2-TX(J4-21) / PD6-RX(J4-23), AF7, 115200 8N1
  * 查询方式        主机主动轮询 (200ms 间隔)
  * 协议格式        Modbus-RTU: 地址(1B) + 功能码(1B) + 数据(NB) + CRC16(2B)
  *
@@ -12,8 +12,9 @@
  * 日期            作者            备注
  * 2026-05-06      AI助手          初始版本
  * 2026-05-21      CIMC            GD32F407→GD32H759 移植
- * 2026-06-10      CIMC            TOF 串口改为 UART3 PA0/PA1 (原 USART1 通信失败)
+ * 2026-06-10      CIMC            TOF 串口改为 UART3 PA0/PA1 (原 USART1 通信失败 — RS485跳线帽)
  * 2026-06-10      CIMC            精简调试输出，仅保留异常告警
+ * 2026-06-30      CIMC            TOF 迁至 USART1 PA2/PD6 (拔掉RS485跳线帽后通信正常)
  ******************************************************************************/
 
 #include "laser.h"
@@ -124,7 +125,7 @@ static void handle_read_response(uint32_t frame_len)
 {
     if (!check_frame_crc(rx_frame, frame_len)) {
         crc_error_count++;
-        printf("[Laser CRC ERR] count=%lu\r\n", (unsigned long)crc_error_count);
+        printf("[Laser CRC ERR] count=%u\r\n", (unsigned)crc_error_count);
         return;
     }
 
@@ -145,7 +146,7 @@ static void handle_write_ack(uint32_t frame_len)
 {
     if (!check_frame_crc(rx_frame, frame_len)) {
         crc_error_count++;
-        printf("[Laser ACK CRC ERR] count=%lu\r\n", (unsigned long)crc_error_count);
+        printf("[Laser ACK CRC ERR] count=%u\r\n", (unsigned)crc_error_count);
         return;
     }
 }
@@ -163,7 +164,7 @@ static void handle_exception(uint32_t frame_len)
         printf("[Laser EXCEPTION] func=0x%02X code=0x%02X\r\n", rx_frame[1], rx_frame[2]);
     } else {
         crc_error_count++;
-        printf("[Laser EXCEPTION CRC ERR] count=%lu\r\n", (unsigned long)crc_error_count);
+        printf("[Laser EXCEPTION CRC ERR] count=%u\r\n", (unsigned)crc_error_count);
     }
 }
 
@@ -242,7 +243,7 @@ static void try_parse_frames(void)
 static void process_rx_byte(uint8_t data)
 {
     if (rx_len > 0U && (g_sys_ms - last_rx_ms) > FRAME_TIMEOUT_MS) {
-        printf("[Laser PARTIAL DROP] %lu bytes timed out\r\n", (unsigned long)rx_len);
+        printf("[Laser PARTIAL DROP] %u bytes timed out\r\n", (unsigned)rx_len);
         rx_len = 0;
     }
     last_rx_ms = g_sys_ms;
@@ -258,7 +259,7 @@ static void process_rx_byte(uint8_t data)
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数名称     drain_tof_rx
-// 函数说明     排空 UART_TOF 接收 FIFO 中的所有字节，逐个送入帧解析器
+// 函数说明     排空 UART_USART1 接收 FIFO 中的所有字节，逐个送入帧解析器
 //              在每次发送命令后调用，以读取模块的响应数据
 // 返回值       void
 //-------------------------------------------------------------------------------------------------------------------
@@ -266,7 +267,7 @@ static void drain_tof_rx(void)
 {
     uint8_t ch;
 
-    while (uart_query_byte(UART_TOF, &ch)) {
+    while (uart_query_byte(UART_USART1, &ch)) {
         process_rx_byte(ch);
     }
 }
@@ -282,18 +283,18 @@ static void drain_tof_rx(void)
 //-------------------------------------------------------------------------------------------------------------------
 static void tof200f_config(void)
 {
-    printf("[Laser] UART3 PA0/PA1 init, baud 115200\r\n");
+    printf("[Laser] USART1 PA2/PD6 init, baud 115200\r\n");
     printf("[Laser] Sending handshake...\r\n");
-    uart_send_buffer(UART_TOF, CMD_HANDSHAKE, sizeof(CMD_HANDSHAKE));
+    uart_send_buffer(UART_USART1, CMD_HANDSHAKE, sizeof(CMD_HANDSHAKE));
     delay_1ms(80);
     drain_tof_rx();
 
     printf("[Laser] Sending high precision config...\r\n");
-    uart_send_buffer(UART_TOF, CMD_HIGH_PRECISION, sizeof(CMD_HIGH_PRECISION));
+    uart_send_buffer(UART_USART1, CMD_HIGH_PRECISION, sizeof(CMD_HIGH_PRECISION));
     delay_1ms(80);
     drain_tof_rx();
 
-    uart_flush_rx(UART_TOF);
+    uart_flush_rx(UART_USART1);
     rx_len = 0;
 }
 
@@ -309,12 +310,12 @@ static void tof200f_process(void)
     drain_tof_rx();
 
     if ((g_sys_ms - last_rx_ms) > FRAME_TIMEOUT_MS && rx_len > 0U) {
-        printf("[Laser PARTIAL DROP] %lu bytes timed out\r\n", (unsigned long)rx_len);
+        printf("[Laser PARTIAL DROP] %u bytes timed out\r\n", (unsigned)rx_len);
         rx_len = 0;
     }
 
     if ((g_sys_ms - last_query_ms) >= QUERY_INTERVAL_MS) {
-        uart_send_buffer(UART_TOF, CMD_QUERY_DISTANCE, sizeof(CMD_QUERY_DISTANCE));
+        uart_send_buffer(UART_USART1, CMD_QUERY_DISTANCE, sizeof(CMD_QUERY_DISTANCE));
         last_query_ms = g_sys_ms;
         query_count++;
     }
@@ -323,7 +324,7 @@ static void tof200f_process(void)
 //-------------------------------------------------------------------------------------------------------------------
 // 函数名称     Laser_Init
 // 函数说明     初始化 TOF200F 激光测距模块
-//              流程：重置内部状态 → UART3 初始化 (PA0/PA1, 115200) → 握手配置
+//              流程：重置内部状态 → USART1 初始化 (PA2/PD6, 115200) → 握手配置
 // 返回值       void
 // 使用示例     Laser_Init();  // 系统启动时调用一次
 //-------------------------------------------------------------------------------------------------------------------
@@ -337,8 +338,8 @@ void Laser_Init(void)
     frame_count = 0;
     crc_error_count = 0;
 
-    uart_init(UART_TOF, 115200);
-    uart_flush_rx(UART_TOF);
+    uart_init(UART_USART1, 115200);
+    uart_flush_rx(UART_USART1);
     tof200f_config();
 
     printf("TOF200F laser parser: OK\r\n");

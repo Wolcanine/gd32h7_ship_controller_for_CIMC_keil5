@@ -33,7 +33,7 @@ static void MyI2C_Delay(void)
 // 函数说明     SCL 时钟线写操作（含延时）
 // 参数         BitValue     1 = 高电平, 0 = 低电平
 //-------------------------------------------------------------------------------------------------------------------
-void MyI2C_W_SCL(uint8_t BitValue)
+static void MyI2C_W_SCL(uint8_t BitValue)
 {
     if(BitValue) {
         gpio_bit_set(MYI2C_GPIO_PORT, MYI2C_SCL_PIN);
@@ -48,7 +48,7 @@ void MyI2C_W_SCL(uint8_t BitValue)
 // 函数说明     SDA 数据线写操作（含延时）
 // 参数         BitValue     1 = 高电平（释放总线）, 0 = 低电平（拉低总线）
 //-------------------------------------------------------------------------------------------------------------------
-void MyI2C_W_SDA(uint8_t BitValue)
+static void MyI2C_W_SDA(uint8_t BitValue)
 {
     if(BitValue) {
         gpio_bit_set(MYI2C_GPIO_PORT, MYI2C_SDA_PIN);
@@ -63,7 +63,7 @@ void MyI2C_W_SDA(uint8_t BitValue)
 // 函数说明     SDA 数据线读操作 —— 读取当前引脚电平（含延时）
 // 返回值       引脚当前电平 (0 或 1)
 //-------------------------------------------------------------------------------------------------------------------
-uint8_t MyI2C_R_SDA(void)
+static uint8_t MyI2C_R_SDA(void)
 {
     uint8_t BitValue;
     BitValue = gpio_input_bit_get(MYI2C_GPIO_PORT, MYI2C_SDA_PIN);

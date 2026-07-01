@@ -34,4 +34,9 @@ void ShipController_Init(ShipController *sc, float kp, float ki, float kd,
  */
 void ShipController_Update(ShipController *sc, float throttle, float steering);
 
+/**
+ * @brief 重置 PID 积分器和微分状态（模式切换时调用）
+ */
+void ShipController_Reset(ShipController *sc);
+
 #endif

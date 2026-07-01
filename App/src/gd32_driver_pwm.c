@@ -80,6 +80,8 @@ void pwm_init(uint32_t gpio_port, uint16_t gpio_pin)
     else if (gpio_port == GPIOC) rcu_periph_clock_enable(RCU_GPIOC);
     else if (gpio_port == GPIOD) rcu_periph_clock_enable(RCU_GPIOD);
     else if (gpio_port == GPIOE) rcu_periph_clock_enable(RCU_GPIOE);
+    else if (gpio_port == GPIOF) rcu_periph_clock_enable(RCU_GPIOF);
+    else if (gpio_port == GPIOG) rcu_periph_clock_enable(RCU_GPIOG);
 
     /* 配置为推挽输出，初始高电平（共阳 LED 熄灭） */
     gpio_mode_set(gpio_port, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, gpio_pin);

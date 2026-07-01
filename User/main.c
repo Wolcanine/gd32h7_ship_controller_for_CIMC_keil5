@@ -17,11 +17,11 @@
 //#define PCA9685_MODULE_TEST
 //#define DIRECT_SERVO_SWEEP
 //#define SW_UART_ECHO_TEST
-//#define GPS_MODULE_TEST
-//#define STEPPER_MODULE_TEST
-#define ARM_TEACH_TEST
+////#define GPS_MODULE_TEST
+#define STEPPER_MODULE_TEST
+//#define SERVO_200HZ_TEST     /* ★ PCA9685 244Hz 舵机+电机测试 */
+//#define ARM_TEACH_TEST
 //#define GYRO_PCA9685_TEST
-//#define GPS_MODULE_TEST
 //#define UART_DBG_ECHO_TEST
 
 #include "gd32h7xx.h"
@@ -33,6 +33,7 @@
 #include "MyI2C.h"
 #include "MPU6050.h"
 #include "pwm_output.h"
+#include "motor_driver.h"
 #include "ship_controller.h"
 #include "auto_nav.h"
 #include "laser.h"
@@ -70,7 +71,7 @@ static void System_Init(void)
     !defined(DIRECT_SERVO_SWEEP) && !defined(SW_UART_ECHO_TEST) && \
     !defined(GPS_MODULE_TEST) && !defined(STEPPER_MODULE_TEST) && \
     !defined(ARM_TEACH_TEST) && !defined(UART_DBG_ECHO_TEST) && \
-    !defined(GYRO_PCA9685_TEST)
+    !defined(GYRO_PCA9685_TEST) && !defined(SERVO_200HZ_TEST)
 static void System_Run(void)
 {
     /* ---- PS2 ---- */
@@ -88,9 +89,9 @@ static void System_Run(void)
     Laser_Init();
     printf("[TOF] OK\r\n");
 
-    /* ---- 电机 PWM ---- */
-    pwm_output_init();
-    printf("[PWM] OK\r\n");
+    /* ---- 电机驱动 (GPIOC 软件 PWM / PCA9685 I2C, 编译时选择) ---- */
+    motor_init();
+    printf("[Motor] OK\r\n");
 
     /* ---- 船舶控制器 ---- */
     ShipController sc;
@@ -120,12 +121,15 @@ static void System_Run(void)
     pit_ms_init(PIT_TIMER3, 20);
     printf("[TIMER3] 50Hz started\r\n");
 
-    printf("===== System Ready =====\r\n\r\n");
+    printf("===== System Ready =====\r\n");
+    printf("  Green LED ON (analog)  = Manual\r\n");
+    printf("  Green LED OFF (digital) = Auto (laser avoidance)\r\n\r\n");
 
     /* ==================== 主循环 ==================== */
     uint32_t last_loop_ms = 0;
     uint8_t  estop_flag   = 0;
     uint8_t  print_cnt    = 0;
+    uint8_t  prev_mode    = 0xFF;   /* 上一次模式 (用于检测切换) */
 
     while (1) {
         /* 等待 50Hz 周期 (超时 500ms → 紧急停车) */
@@ -133,8 +137,8 @@ static void System_Run(void)
             __WFI();
             if (!estop_flag && (g_sys_ms - last_loop_ms > 500)) {
                 estop_flag = 1;
-                pwm_set_left_duty(0.0f);
-                pwm_set_right_duty(0.0f);
+                motor_stop();
+                Stepper_SetSpeed(0, 0);
                 printf("\r\n*** EMERGENCY STOP: loop timeout! ***\r\n");
             }
         }
@@ -142,39 +146,114 @@ static void System_Run(void)
         estop_flag     = 0;
         last_loop_ms   = g_sys_ms;
 
-        /* 传感器 */
+        /* ---- 传感器 (所有模式共用) ---- */
         ps2_read_data();
         MPU6050_Update();
-        Laser_GetDistanceCm();
+        uint16_t laser_cm = Laser_GetDistanceCm();
         GPS_Process();
 
-        /* 机械臂 */
+        /* ---- PS2 断连安全 ---- */
+        if (!ps2_is_connected()) {
+            motor_set_left_duty(0.0f);
+            motor_set_right_duty(0.0f);
+            Stepper_SetSpeed(0, 0);
+            static uint8_t disc_warn = 0;
+            if (++disc_warn >= 250) {  /* 每 5 秒告警一次 */
+                disc_warn = 0;
+                printf("*** PS2 DISCONNECTED — motors stopped ***\r\n");
+            }
+            goto arm_and_report;
+        }
+
+        /* ---- 自动航行状态机 (手动模式时内部直接 return) ---- */
+        AutoNav_Process();
+
+        /* ---- 模式切换检测 ---- */
+        NavMode mode = AutoNav_GetMode();
+        if (mode != prev_mode) {
+            prev_mode = mode;
+            /* 模式切换时重置控制器和状态机 */
+            ShipController_Reset(&sc);
+            motor_set_left_duty(0.0f);
+            motor_set_right_duty(0.0f);
+            if (mode == NAV_MODE_AUTO) {
+                AutoNav_ResetState();
+                printf("\r\n===== SWITCH TO AUTO MODE (laser avoidance) =====\r\n\r\n");
+            } else {
+                printf("\r\n===== SWITCH TO MANUAL MODE (PS2 control) =====\r\n\r\n");
+            }
+        }
+
+        /* ---- 油门/转向 → PID → 电机 ---- */
+        float throttle = AutoNav_GetThrottle();   /* 手动=PS2值, 自动=避障值 */
+        float steering = AutoNav_GetSteering();
+        ShipController_Update(&sc, throttle, steering);
+        motor_throttle_tick();
+
+        /* ---- 步进电机 (模式感知，解决 L1/L2 冲突) ---- */
+        if (mode == NAV_MODE_AUTO) {
+            /* 自动模式: L1/L2 直接控制步进 (超驰自动逻辑) */
+            ServoArm_SetRemoteEnabled(0);         /* 禁用 arm 手动遥控 */
+            if (PS2_Data.l1) {
+                Stepper_SetSpeed(1, 4);
+            } else if (PS2_Data.l2) {
+                Stepper_SetSpeed(-1, 4);
+            } else {
+                /* 自动逻辑: 直行时开传送带, 转向时停 */
+                if (AutoNav_GetState() == NAV_STATE_FORWARD)
+                    Stepper_SetSpeed(1, 4);
+                else
+                    Stepper_SetSpeed(0, 0);
+            }
+        } else {
+            /* 手动模式: SELECT + L1/L2 = 步进电机 (L1/L2 单独 = 腕旋转 CH4) */
+            ServoArm_SetRemoteEnabled(1);         /* 允许 arm 手动遥控 */
+            if (PS2_Data.select && PS2_Data.l1) {
+                Stepper_SetSpeed(1, 4);
+            } else if (PS2_Data.select && PS2_Data.l2) {
+                Stepper_SetSpeed(-1, 4);
+            } else {
+                Stepper_SetSpeed(0, 0);
+            }
+        }
+
+        /* ---- 机械臂 ---- */
+    arm_and_report:
         ServoArm_RemoteControl();
         ServoArm_HandlePresets();
         ServoArm_ProcessSerialCommand();   /* 串口角度指令 {a,b,c,d,e,f} */
         ServoArm_SmoothUpdate();
+        ServoArm_SequenceUpdate();          /* 采集序列自动推进 */
 
-        /* 传送带 (步进电机): PS2 L1=收垃圾(正转), L2=释放(反转), 否则停止
-         * ⚠ L1/L2 与机械臂腕旋转(ch4)共用，同时按键会联动 */
-        if (PS2_Data.l1) {
-            Stepper_SetSpeed(1, 4);     /* 正转, 500Hz 步进 */
-        } else if (PS2_Data.l2) {
-            Stepper_SetSpeed(-1, 4);    /* 反转, 500Hz 步进 */
-        } else {
-            Stepper_SetSpeed(0, 0);     /* 停止 */
+        /* PS2 R3 一键启动采集序列 */
+        {
+            static uint8_t prev_r3 = 0;
+            if (PS2_Data.r3 && !prev_r3) {
+                ServoArm_StartSequence();
+            }
+            prev_r3 = PS2_Data.r3;
         }
 
-        /* 1Hz 上报 */
+        /* ---- 1Hz 上报 (模式感知) ---- */
         if (++print_cnt >= 50) {
             print_cnt = 0;
-            printf("PS2:%.2f/%.2f GYRO:%+04ld/%+04ld/%+04ld "
-                   "ACCEL:%+05ld/%+05ld/%+05ld LASER:%4u MODE:0x%02X\r\n",
-                   (double)ps2_get_throttle(), (double)ps2_get_steering(),
-                   (long)MPU6050_GetGyroX_dps100(), (long)MPU6050_GetGyroY_dps100(),
-                   (long)MPU6050_GetGyroZ_dps100(),
-                   (long)MPU6050_GetAccelX_mg(),   (long)MPU6050_GetAccelY_mg(),
-                   (long)MPU6050_GetAccelZ_mg(),
-                   (unsigned)Laser_GetDistanceCm(), (unsigned)ps2_get_mode());
+            if (mode == NAV_MODE_AUTO) {
+                printf("AUTO:%s THR=%.2f STR=%.2f LASER=%ucm YAW=%.1fdeg\r\n",
+                       (AutoNav_GetState() == NAV_STATE_FORWARD) ? "FWD " : "TURN",
+                       (double)AutoNav_GetThrottle(),
+                       (double)AutoNav_GetSteering(),
+                       (unsigned)laser_cm,
+                       (double)AutoNav_GetYawDeg());
+            } else {
+                printf("MAN: PS2=%.2f/%.2f GYRO:%+04ld/%+04ld/%+04ld "
+                       "ACCEL:%+05ld/%+05ld/%+05ld LASER:%4u\r\n",
+                       (double)ps2_get_throttle(), (double)ps2_get_steering(),
+                       (long)MPU6050_GetGyroX_dps100(), (long)MPU6050_GetGyroY_dps100(),
+                       (long)MPU6050_GetGyroZ_dps100(),
+                       (long)MPU6050_GetAccelX_mg(),   (long)MPU6050_GetAccelY_mg(),
+                       (long)MPU6050_GetAccelZ_mg(),
+                       (unsigned)laser_cm);
+            }
             ServoArm_PrintStatus();
             GPS_PrintStatus();
             printf("STEP: %ld steps\r\n", (long)Stepper_GetCurStep());
@@ -256,7 +335,7 @@ static void test_pca9685(void)
     MyI2C_Init();
     pca9685_init(PCA9685_I2C_ADDR);
     pca9685_set_pwm_freq(PCA9685_I2C_ADDR, PCA9685_SERVO_FREQ);
-    pca9685_output_enable();
+
 
     for (int i = 0; i < 7; i++) {
         uint16_t p = pca9685_angle_to_pulse(angles[i], S_MIN, S_MAX);
@@ -281,7 +360,7 @@ static void test_gyro_pca9685(void)
     #define PCA_MIN  102
     #define PCA_MAX  512
     uint32_t last_print_ms = 0;
-    uint8_t  sweep_dir = 1;
+    int8_t   sweep_dir = 1;
     float    sweep_angle = 0.0f;
     uint16_t sweep_frame = 0;
 
@@ -306,7 +385,7 @@ static void test_gyro_pca9685(void)
     /* ---- 3. PCA9685 初始化 (MODE2 推挽 + STOP更新) ---- */
     pca9685_init(PCA9685_I2C_ADDR);
     pca9685_set_pwm_freq(PCA9685_I2C_ADDR, PCA9685_SERVO_FREQ);
-    pca9685_output_enable();
+
     printf("[PCA9685] 0x40 OK (50Hz, OE=L)\r\n");
 
     /* ---- 4. ch8~ch14 初始归零 ---- */
@@ -389,6 +468,165 @@ static void test_gyro_pca9685(void)
     #undef PCA_MAX
 }
 #endif /* GYRO_PCA9685_TEST */
+
+/* ==================== PCA9685 200Hz 舵机测试 ==================== */
+#ifdef SERVO_200HZ_TEST
+static void test_servo_200hz(void)
+{
+    #define T_SERVO_MIN  500     /* 0.50ms @ 244Hz, 1μs/step */
+    #define T_SERVO_MAX  2500    /* 2.50ms @ 244Hz, 1μs/step */
+
+    /* 差速电机通道 (H 桥双引脚) */
+    #define T_MOTOR_CH_LF  6     /* 左电机正转 */
+    #define T_MOTOR_CH_LR  7     /* 左电机反转 */
+    #define T_MOTOR_CH_RF  8     /* 右电机正转 */
+    #define T_MOTOR_CH_RR  9     /* 右电机反转 */
+    #define T_MOTOR_MAX    1024  /* 25% 占空比上限 (1024/4096) */
+
+    /* 主驱动电机 (仅正转, 1~2ms 脉宽) */
+    #define T_MAIN_CH       10    /* CH10 = 主驱动电机 */
+    #define T_MAIN_MIN      1000  /* 1.00ms = 停止 */
+    #define T_MAIN_MAX      2000  /* 2.00ms = 全速 */
+
+    uint32_t last_print_ms = 0;
+
+    printf("\r\n===============================================\r\n");
+    printf("  PCA9685 244Hz Servo + Motor Test\r\n");
+    printf("  I2C: PE13(SCL) / PE15(SDA)\r\n");
+    printf("  Freq: 244Hz (1us/step), prescale=24\r\n");
+    printf("===============================================\r\n\r\n");
+
+    /* ---- 1. I2C + PCA9685 ---- */
+    MyI2C_Init();
+    printf("[I2C] PE13/PE15 OK\r\n");
+
+    pca9685_init(PCA9685_I2C_ADDR);
+    pca9685_set_pwm_freq(PCA9685_I2C_ADDR, 244.0f);
+
+    printf("[PCA9685] @ 244Hz, OE=L\r\n");
+
+    /* ---- 2. 舵机: CH0=0°, CH1=180° (参考) ---- */
+    pca9685_set_pwm(PCA9685_I2C_ADDR, 0, 0, T_SERVO_MIN);
+    pca9685_set_pwm(PCA9685_I2C_ADDR, 1, 0, T_SERVO_MAX);
+    for (int i = 2; i < 6; i++)
+        pca9685_set_pwm(PCA9685_I2C_ADDR, i, 0, T_SERVO_MIN);
+    printf("[SERVO] CH0=0°  CH1=180°\r\n");
+
+    /* ---- 3. 电机: CH6~CH9 初始滑行 ---- */
+    pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LF, 0, 0);
+    pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LR, 0, 0);
+    pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RF, 0, 0);
+    pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RR, 0, 0);
+    printf("[MOTOR] CH6~9 → coast\r\n");
+
+    /* ---- 3b. 主驱动电机: CH10=1000us (停止) ---- */
+    pca9685_set_pwm(PCA9685_I2C_ADDR, T_MAIN_CH, 0, T_MAIN_MIN);
+    printf("[MAIN] CH10=%uus (stop)\r\n", (unsigned)T_MAIN_MIN);
+
+    /* ---- 4. TOF200F 激光 (USART1 PA2/PD6) ---- */
+    printf("[TOF] init USART1 PA2/PD6...\r\n");
+    Laser_Init();
+    printf("[TOF] USART1 PA2/PD6 @115200 OK\r\n");
+
+    /* ---- 5. 启动 PS2 + 50Hz 定时器 ---- */
+    ps2_init();
+    printf("[PS2] OK\r\n");
+    pit_ms_init(PIT_TIMER3, 20);
+    printf("[TIMER3] 50Hz started\r\n");
+
+    printf("\r\n===== Servo+Motor Test Ready =====\r\n");
+    printf("  CH0=0° CH1=180° (servo reference)\r\n");
+    printf("  CH6~9: motor auto-ramp test\r\n");
+    printf("  PS2: UP=+throttle DOWN=-throttle X=brake\r\n\r\n");
+
+    while (1)
+    {
+        while (!timer20ms_flag) __WFI();
+        timer20ms_flag = 0;
+
+        ps2_read_data();
+
+        float throttle = ps2_get_throttle();
+        float steering = ps2_get_steering();
+        uint8_t brake = ps2_key_pressed(PSB_CROSS);
+
+        if (brake) {
+            /* ── 刹车: 所有电机短路制动 ── */
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LF, 4096, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LR, 4096, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RF, 4096, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RR, 4096, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MAIN_CH, 0, T_MAIN_MIN);
+
+        } else if (throttle > 0.01f) {
+            /* ── 前进: 主电机油门直驱 + 差速电机正转转向 ── */
+            uint16_t main_pulse = T_MAIN_MIN +
+                (uint16_t)(throttle * (float)(T_MAIN_MAX - T_MAIN_MIN));
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MAIN_CH, 0, main_pulse);
+
+            float base = throttle;
+            float diff = steering * throttle * 0.5f;  /* 转向分量 (50%强度) */
+            float left  = base - diff;
+            float right = base + diff;
+
+            /* 钳位 0~1, 仅正转, 最小 1% 避免频繁启停 */
+            if (left  < 0.0f)  left  = 0.0f;
+            if (left  > 0.0f && left  < 0.01f) left  = 0.01f;
+            if (left  > 1.0f)  left  = 1.0f;
+            if (right < 0.0f)  right = 0.0f;
+            if (right > 0.0f && right < 0.01f) right = 0.01f;
+            if (right > 1.0f)  right = 1.0f;
+
+            uint16_t dL = (uint16_t)(left  * (float)T_MOTOR_MAX);
+            uint16_t dR = (uint16_t)(right * (float)T_MOTOR_MAX);
+
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LF, 0, dL);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LR, 0, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RF, 0, dR);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RR, 0, 0);
+
+        } else if (throttle < -0.01f) {
+            /* ── 倒车: 主电机停转, 差速电机固定速度反转 ── */
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MAIN_CH, 0, T_MAIN_MIN);
+
+            uint16_t d_rev = T_MOTOR_MAX / 3;  /* 固定 ~8% 反转 */
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LF, 0, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LR, 0, d_rev);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RF, 0, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RR, 0, d_rev);
+
+        } else {
+            /* ── 停止: 全部滑行 ── */
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MAIN_CH, 0, T_MAIN_MIN);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LF, 0, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LR, 0, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RF, 0, 0);
+            pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RR, 0, 0);
+        }
+
+        /* TOF200F 激光测距 */
+        uint16_t dist_cm = Laser_GetDistanceCm();
+
+        /* 1Hz 上报 */
+        if (g_sys_ms - last_print_ms >= 1000) {
+            last_print_ms = g_sys_ms;
+            uint16_t mp = T_MAIN_MIN;
+            if (throttle > 0.0f)
+                mp = T_MAIN_MIN + (uint16_t)(throttle * (float)(T_MAIN_MAX - T_MAIN_MIN));
+            printf("[244Hz] THR=%.2f STR=%.2f | Main=%uuS | TOF=%ucm brake=%u\r\n",
+                   (double)throttle, (double)steering,
+                   (unsigned)mp, (unsigned)dist_cm, (unsigned)brake);
+        }
+    }
+    #undef T_SERVO_MIN
+    #undef T_SERVO_MAX
+    #undef T_MOTOR_CH_LF
+    #undef T_MOTOR_CH_LR
+    #undef T_MOTOR_CH_RF
+    #undef T_MOTOR_CH_RR
+    #undef T_MOTOR_MAX
+}
+#endif /* SERVO_200HZ_TEST */
 
 /* ==================== 机械臂示教测试 ==================== */
 #ifdef ARM_TEACH_TEST
@@ -474,7 +712,7 @@ static void test_sweep(void)
     MyI2C_Init();
     pca9685_init(PCA9685_I2C_ADDR);
     pca9685_set_pwm_freq(PCA9685_I2C_ADDR, PCA9685_SERVO_FREQ);
-    pca9685_output_enable();
+
     for (int i = 0; i < 7; i++)
         pca9685_set_pwm(PCA9685_I2C_ADDR, 8+i, 0,
             pca9685_angle_to_pulse(i*30.0f, 102, 512));
@@ -527,28 +765,18 @@ static void test_stepper(void)
     printf("PS2: L1=正转(收垃圾) L2=反转(释放) 松手=停止\r\n");
     printf("     speed_div=4 (500Hz 步进)\r\n\r\n");
 
+    /* 上电即持续正转 (speed_div=1 → 2000Hz 最快) */
+    Stepper_SetSpeed(1, 1);
+
     while (1)
     {
         while (!timer20ms_flag) __WFI();
         timer20ms_flag = 0;
 
-        ps2_read_data();
-
-        /* PS2 控制步进电机 */
-        if (PS2_Data.l1) {
-            Stepper_SetSpeed(1, 4);      /* 正转 */
-        } else if (PS2_Data.l2) {
-            Stepper_SetSpeed(-1, 4);     /* 反转 */
-        } else {
-            Stepper_SetSpeed(0, 0);      /* 停止 */
-        }
-
         /* 每秒打印步数 */
         if (g_sys_ms - last_print_ms >= 1000) {
             last_print_ms = g_sys_ms;
-            printf("STEP: %ld steps | L1=%u L2=%u\r\n",
-                   (long)Stepper_GetCurStep(),
-                   (unsigned)PS2_Data.l1, (unsigned)PS2_Data.l2);
+            printf("STEP: %ld steps\r\n", (long)Stepper_GetCurStep());
         }
     }
 }
@@ -675,6 +903,8 @@ int main(void)
     test_motor();
 #elif defined(PCA9685_MODULE_TEST)
     test_pca9685();
+#elif defined(SERVO_200HZ_TEST)
+    test_servo_200hz();
 #elif defined(ARM_TEACH_TEST)
     test_arm_teach();
 #elif defined(UART_DBG_ECHO_TEST)

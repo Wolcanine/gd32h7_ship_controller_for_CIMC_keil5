@@ -11,12 +11,13 @@
 * 功能              中断接收 + 软件 FIFO + 阻塞发送，支持 3 路独立串口
 *
 * 硬件连接
-*                   UART_TOF (TOF200F 激光): UART3,  PA0-TX(J5-44) / PA1-RX(J5-43), AF8
+*                   UART_TOF (已废弃):       UART3,  PA0-TX(J5-44) / PA1-RX(J5-43), AF8
+*                                             TOF200F 已迁至 UART_USART1，UART3 空闲预留
 *                   UART_DBG (调试/CH340):  UART4,  PB5-TX(J5-38) / PB13-RX(J5-36), AF14
 *                   UART_CAM (已废弃):      UART7,  PC10-TX(J4-51) / PC11-RX(J4-52), AF8
 *                                             原用于双 MCU 板间通信 (H7↔F4)，现已改为同板视觉方案
 *                                             PC10/PC11 已释放，可重新分配
-*                   UART_USART1 (预留):     USART1, PA2-TX(J4-21) / PD6-RX(J4-23), AF7
+*                   UART_USART1 (TOF200F):  USART1, PA2-TX(J4-21) / PD6-RX(J4-23), AF7
 *                   UART_UART6 (预留):      UART6,  PF7-TX(J4-17) / PF6-RX(J4-19), AF6
 *
 * 修改记录
@@ -25,9 +26,10 @@
 * 2026-05-08          AI助手        添加 UART_CAM，调整 TOF 为 USART1(PA2/PA3)
 * 2026-05-21          CIMC          GD32F407→GD32H759 移植
 * 2026-06-03          CIMC          引脚重分配：UART_DBG→UART4, UART_CAM→UART7
-* 2026-06-10          CIMC          TOF 串口改为 UART3 PA0/PA1 (原 USART1 通信失败)
+* 2026-06-10          CIMC          TOF 串口改为 UART3 PA0/PA1 (原 USART1 通信失败 — RS485跳线帽)
 * 2026-06-12          CIMC          UART_CAM 标记废弃（双MCU→单H7），PC10/PC11 释放
 * 2026-06-18          CIMC          新增 UART_USART1 和 UART_UART6 两路预留串口
+* 2026-06-30          CIMC          TOF 迁至 UART_USART1 (PA2/PD6)，UART_TOF 条目废弃
 *********************************************************************************************************************/
 
 #ifndef __UART_DRIVER_H
@@ -39,7 +41,7 @@
 //=================================================== 模块索引 ====================================================
 
 typedef enum {
-    UART_TOF    = 0,    /* TOF200F模块通信: UART3,    PA0-TX(J5-44) / PA1-RX(J5-43), AF8 */
+    UART_TOF    = 0,    /* [已废弃] UART3, PA0-TX/PA1-RX, AF8 — TOF 已迁至 UART_USART1 */
     UART_DBG    = 1,    /* 调试串口:        UART4,    PB5-TX(J5-38) / PB13-RX(J5-36), AF14 → CH340 */
     UART_CAM    = 2,    /* 摄像头识别板:    UART7,    PC10-TX / PC11-RX (AF8), 已废弃 */
     UART_USART1 = 3,    /* 预留串口1:       USART1,   PA2-TX(J4-21) / PD6-RX(J4-23), AF7 */
@@ -88,7 +90,7 @@ void uart_send_buffer(uart_module_enum module, const uint8_t *buff, uint32_t len
 // 参数说明     module      模块索引
 // 参数说明     str         以 '\0' 结尾的字符串指针
 // 返回参数     void
-// 使用示例     uart_send_string(UART_TOF, "Hello\r\n");  //发送字符串
+// 使用示例     uart_send_string(UART_USART1, "Hello\r\n");  //发送字符串
 //-------------------------------------------------------------------------------------------------------------------
 void uart_send_string(uart_module_enum module, const char *str);
 

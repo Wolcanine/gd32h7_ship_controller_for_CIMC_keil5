@@ -10,10 +10,9 @@
  * 2026-05-21      CIMC            GD32F407→GD32H759 移植
  ******************************************************************************/
 
-// ship_controller.c
 #include "ship_controller.h"
 #include "MPU6050.h"
-#include "pwm_output.h"
+#include "motor_driver.h"
 #include <math.h>
 
 // 从 MPU6050 Z 轴角速度缓存（0.01°/s）转换为 deg/s 浮点数
@@ -58,8 +57,8 @@ void ShipController_Update(ShipController *sc, float throttle, float steering)
     } else {
         sc->yaw_integral = 0.0f;       // 防止积分饱和残留
         sc->prev_yaw_error = 0.0f;
-        pwm_set_left_duty(throttle);
-        pwm_set_right_duty(throttle);
+        motor_set_left_duty(throttle);
+        motor_set_right_duty(throttle);
         return;
     }
 
@@ -112,6 +111,12 @@ void ShipController_Update(ShipController *sc, float throttle, float steering)
     float left  = base_duty - diff;
     float right = base_duty + diff;
 
+    // 前进时最小油门保护, 避免 PID 差速把一侧电机拉停
+    if (base_duty > 0.0f) {
+        if (left  > 0.0f && left  < 0.01f) left  = 0.01f;
+        if (right > 0.0f && right < 0.01f) right = 0.01f;
+    }
+
     // 总占空比限幅
     float max_abs = fabsf(left);
     if (fabsf(right) > max_abs) max_abs = fabsf(right);
@@ -121,7 +126,13 @@ void ShipController_Update(ShipController *sc, float throttle, float steering)
         right *= scale;
     }
 
-    // 7. 直接通过 pwm_output 模块输出
-    pwm_set_left_duty(left);
-    pwm_set_right_duty(right);
+    // 7. 直接通过 motor_driver 模块输出
+    motor_set_left_duty(left);
+    motor_set_right_duty(right);
+}
+
+void ShipController_Reset(ShipController *sc)
+{
+    sc->yaw_integral   = 0.0f;
+    sc->prev_yaw_error = 0.0f;
 }

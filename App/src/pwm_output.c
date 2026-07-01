@@ -30,11 +30,6 @@
 /* 方向切换刹车保持周期数（50Hz × 5 = 100ms） */
 #define BRAKE_CYCLES 5
 
-/* 启动突加参数: 油门 >10% 时先给 70% 持续 0.1s 克服静摩擦 */
-#define START_THRESHOLD   0.10f
-#define START_KICK_DUTY   0.70f
-#define START_KICK_FRAMES 5        /* 50Hz × 5 = 100ms */
-
 /* ==================== 电机方向切换状态 ==================== */
 typedef struct {
     int8_t  brake_cnt;      /* >0: 正在刹车倒计时 (50Hz 帧)    */
