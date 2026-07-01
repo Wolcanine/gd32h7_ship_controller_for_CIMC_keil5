@@ -160,7 +160,7 @@ static void System_Run(void)
             static uint8_t disc_warn = 0;
             if (++disc_warn >= 250) {  /* 每 5 秒告警一次 */
                 disc_warn = 0;
-                printf("*** PS2 DISCONNECTED — motors stopped ***\r\n");
+                printf("*** PS2 DISCONNECTED -- motors stopped ***\r\n");
             }
             goto arm_and_report;
         }
@@ -375,8 +375,8 @@ static void test_gyro_pca9685(void)
 
     /* ---- 2. MPU6050 初始化 (WHO_AM_I + 校准) ---- */
     if (MPU6050_Init() != MPU6050_OK) {
-        printf("[MPU6050] *** FAILED — check wiring! ***\r\n");
-        printf("  VCC→3.3V  GND→GND  SCL→PE13  SDA→PE15  AD0→GND\r\n");
+        printf("[MPU6050] *** FAILED -- check wiring! ***\r\n");
+        printf("  VCC->3.3V  GND->GND  SCL->PE13  SDA->PE15  AD0->GND\r\n");
         /* 不阻塞，继续测试 PCA9685 */
     } else {
         printf("[MPU6050] Init OK (ID=0x68, calibrated)\r\n");
@@ -393,7 +393,7 @@ static void test_gyro_pca9685(void)
         pca9685_set_pwm(PCA9685_I2C_ADDR, 8 + i, 0,
                         pca9685_angle_to_pulse(0.0f, PCA_MIN, PCA_MAX));
     }
-    printf("[PCA9685] ch8~14 → 0 deg\r\n");
+    printf("[PCA9685] ch8~14 -> 0 deg\r\n");
 
     /* ---- 5. 启动 50Hz 定时器 ---- */
     pit_ms_init(PIT_TIMER3, 20);
@@ -517,7 +517,7 @@ static void test_servo_200hz(void)
     pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_LR, 0, 0);
     pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RF, 0, 0);
     pca9685_set_pwm(PCA9685_I2C_ADDR, T_MOTOR_CH_RR, 0, 0);
-    printf("[MOTOR] CH6~9 → coast\r\n");
+    printf("[MOTOR] CH6~9 -> coast\r\n");
 
     /* ---- 3b. 主驱动电机: CH10=1000us (停止) ---- */
     pca9685_set_pwm(PCA9685_I2C_ADDR, T_MAIN_CH, 0, T_MAIN_MIN);
@@ -653,7 +653,7 @@ static void test_arm_teach(void)
     printf("\r\n===== Ready =====\r\n");
     printf("LT/RT=Base  UP/DN=Shld  SQ/CI=Elbw  TRI/X=WrstP\r\n");
     printf("L1/L2=WrstR  R1/R2=Grip  START=Capture  SELECT=PARK\r\n");
-    printf("R3=AutoSeq(6步)  SERIAL: send { a,b,c,d,e,f } to move arm\r\n\r\n");
+    printf("R3=AutoSeq(6-step)  SERIAL: send { a,b,c,d,e,f } to move arm\r\n\r\n");
 
     while (1)
     {
@@ -762,8 +762,8 @@ static void test_stepper(void)
     pit_ms_init(PIT_TIMER3, 20);
     printf("[TIMER3] 50Hz started\r\n");
 
-    printf("PS2: L1=正转(收垃圾) L2=反转(释放) 松手=停止\r\n");
-    printf("     speed_div=4 (500Hz 步进)\r\n\r\n");
+    printf("PS2: L1=fwd(collect) L2=rev(release) idle=stop\r\n");
+    printf("     speed_div=4 (500Hz step rate)\r\n\r\n");
 
     /* 上电即持续正转 (speed_div=1 → 2000Hz 最快) */
     Stepper_SetSpeed(1, 1);
@@ -824,7 +824,7 @@ static void test_uart_dbg_echo(void)
     uint8_t  byte;
 
     printf("\r\n===== UART_DBG (UART4) Echo Test =====\r\n");
-    printf("Port: PB5-TX / PB13-RX @ 9600 → CH340 → USB\r\n");
+    printf("Port: PB5-TX / PB13-RX @ 9600 -> CH340 -> USB\r\n");
     printf("Type anything, MCU prints RX char + hex.\r\n\r\n");
 
     while (1)

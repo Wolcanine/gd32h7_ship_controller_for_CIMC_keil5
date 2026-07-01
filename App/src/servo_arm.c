@@ -557,7 +557,7 @@ void ServoArm_ProcessSerialCommand(void)
                 if (num_count == 6) {
                     ServoArm_MoveToAngles(angles);
                 } else {
-                    printf("Arm: serial err — got %u values, need 6\r\n",
+                    printf("Arm: serial err -- got %u values, need 6\r\n",
                            (unsigned)num_count);
                 }
             }
@@ -589,7 +589,7 @@ void ServoArm_StartSequence(void)
 
     seq_phase     = 1;
     smooth_active = 0;
-    printf("\r\nArm: SEQ start — 6-phase auto sequence\r\n");
+    printf("\r\nArm: SEQ start -- 6-phase auto sequence\r\n");
 }
 
 /* =================================================================================
@@ -613,7 +613,7 @@ void ServoArm_SequenceUpdate(void)
     case 1:  /* 移其他关节 (大臂不动) */
         for (i = 0; i < ARM_JOINT_COUNT; i++) tgt[i] = arm_angle[i];
         tgt[0] = 128; tgt[2] = 145; tgt[3] = 119; tgt[4] = 99; tgt[5] = 109;
-        printf("Arm: SEQ [1/6] others -> {128, —, 145, 119, 99, 109}\r\n");
+        printf("Arm: SEQ [1/6] others -> {128, --, 145, 119, 99, 109}\r\n");
         ServoArm_MoveToAngles(tgt);
         seq_phase = 2;
         break;

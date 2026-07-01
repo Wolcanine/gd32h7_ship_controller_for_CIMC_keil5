@@ -123,9 +123,19 @@ IDE:  Keil MDK5 (uVision5)
     - 模式切换 → 先置零电机 → 重置 PID 积分 + 避障状态机
 
 ======================================================================
-三、改动统计
+四、编译修复 — ARM Compiler 5 UTF-8 兼容
 ======================================================================
 
-  新建文件:  2  (motor_driver.h, motor_driver.c)
-  修改文件: 16  (main.c, ship_controller, auto_nav, servo_arm, laser, ...)
-  +448 行 / -356 行 (净增 92 行，含大量新功能代码)
+  【问题】
+    ARM Compiler 5 不支持 printf 字符串中的 UTF-8 多字节字符，
+    报 #870-D: invalid multibyte character sequence 警告。
+
+  【修复】
+    servo_arm.c: 3 处 em-dash (—) → ASCII double dash (--)
+    main.c:      em-dash (—) → --, 箭头 (→) → ->, 中文 → ASCII 英文
+
+  【涉及文件】
+    App/src/servo_arm.c  — 3 处
+    User/main.c           — 7 处 (em-dash + 箭头 + 中文)
+
+  编译结果: 0 Error(s), 0 Warning(s)
